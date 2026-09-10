@@ -21,6 +21,7 @@ func chatsCmd() *cobra.Command {
 	c.AddCommand(chatsListCmd())
 	c.AddCommand(chatsFindCmd())
 	c.AddCommand(chatsShowCmd())
+	c.AddCommand(chatsArchiveCmd())
 	return c
 }
 
@@ -179,6 +180,7 @@ func renderChatDetail(c store.Conversation, msgs []store.Message) {
 	fmt.Printf("group:           %v\n", c.IsGroup)
 	fmt.Printf("unread:          %v\n", c.Unread)
 	fmt.Printf("pinned:          %v\n", c.Pinned)
+	fmt.Printf("archived:        %v\n", c.Archived)
 	fmt.Printf("last_message:    %s\n", output.FormatTime(c.LastMessageTimeMS))
 	fmt.Printf("participants:    %s\n", participantSummary(c.ParticipantsJSON))
 	fmt.Println()

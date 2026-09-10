@@ -78,6 +78,17 @@ need `--read-only=false`):
 | `approvals.approve` | `{approval_id}` — **performs the send**   | resolved approval |
 | `approvals.deny`    | `{approval_id, reason?}`                  | resolved approval |
 
+### Archive conversations
+
+`chats.archive` takes `{conversation_id}` and returns the updated conversation
+row, including `archived: true`, only after a fresh phone readback confirms it.
+It respects daemon read-only mode (code 1001), runs immediately in writable
+modes, and does not use the outgoing-text approval queue. Missing IDs return
+-32602; unavailable pairing or failed verification returns 1004. Already-archived
+threads succeed without mutation. Success also emits `conversation.updated`
+with the existing `{conversation: ...}` event shape. Timeout errors leave the
+remote outcome unconfirmed; they never imply the archive did not happen.
+
 ### Search semantics
 
 `messages.search` degrades gracefully so natural-language queries always

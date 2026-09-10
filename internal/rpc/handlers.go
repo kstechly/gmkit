@@ -30,6 +30,8 @@ func (s *Server) dispatch(ctx context.Context, c *serverConn, method string, par
 		return s.handleChatsList(ctx, params)
 	case "chats.find":
 		return s.handleChatsFind(ctx, params)
+	case "chats.archive":
+		return s.handleChatsArchive(ctx, params)
 	case "chats.show":
 		return s.handleChatsShow(ctx, params)
 	case "messages.list":

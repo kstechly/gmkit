@@ -60,33 +60,21 @@ The phone must be online and have Google Messages installed for the relay to
 work. Pairing tokens are refreshed automatically; full re-pairing is required
 roughly every 14 days of inactivity (Google's policy, not ours).
 
-## Install
+## Install this fork
 
-No toolchains needed — the installer downloads prebuilt binaries (macOS and
-Linux, arm64 and x86_64) from GitHub Releases:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/johnlindquist/gmkit/main/install.sh | bash
-```
-
-Or from a clone: `./install.sh`. Binaries land in `~/.local/bin` (override
-with `GMKIT_BIN_DIR`). To build from source instead, pass `--source`
-(requires Go 1.24+; Rust optional, for gmtui). Manual equivalents:
+Build the archive-capable CLI from this fork with Go 1.25 or newer:
 
 ```sh
-go install github.com/johnlindquist/gmkit/cmd/gmcli@latest
-cargo install --git https://github.com/johnlindquist/gmkit gmtui
+git clone https://github.com/kstechly/gmkit.git
+cd gmkit
+mkdir -p ~/.local/bin
+go build -ldflags "-X github.com/johnlindquist/gmkit/internal/cmd.Version=$(git describe --tags --always --dirty)" -o ~/.local/bin/gmcli ./cmd/gmcli
 ```
 
-For a source build whose `gmcli version` output includes the current tag or
-commit, inject it at link time:
-
-```sh
-go build -ldflags "-X github.com/johnlindquist/gmkit/internal/cmd.Version=$(git describe --tags --always --dirty)" -o gmcli ./cmd/gmcli
-```
-
-Pre-built binary distribution and Homebrew packaging are planned after the
-initial beta releases.
+The Go module path remains `github.com/johnlindquist/gmkit`; build from the
+checkout above to get this fork's changes. An upstream `go install ...@latest`
+will install upstream instead. The optional `./install.sh --source` also builds
+the Rust TUI when Cargo is installed.
 
 ## Current limits
 
@@ -275,3 +263,25 @@ by default.
 GNU Affero General Public License, version 3 or later. See `LICENSE` for the
 full text and `NOTICE` for the third-party notices required by upstream
 licenses.
+
+## Archive threads (this fork)
+
+Resolve the exact conversation with `gmcli chats find`, then run:
+
+```sh
+gmcli --read-only=false chats archive <conversation-id>
+gmcli --json chats show <conversation-id>
+```
+
+The archive command verifies the phone's status before reporting success and
+updates the local `archived` field. Already-archived threads succeed without
+another write. It uses the existing daemon if a socket is present; restart an
+older daemon with the new binary and `--read-only=false` before archiving.
+With no daemon, it connects for this operation and disconnects afterward.
+A failed readback or timeout is an error, even if Google acknowledged the write;
+the remote change may still have taken effect. No messages are deleted.
+
+After upgrading from v0.4.0, run `gmcli sync` without a running daemon to refresh
+archive flags that the old sync code incorrectly stored as false. `chats list`
+continues to show both inbox and archived conversations. No schema migration or
+re-pairing is needed. Archive is exposed through CLI/RPC, not the TUI or MCP tools.

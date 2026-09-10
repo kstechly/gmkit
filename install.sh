@@ -12,7 +12,7 @@
 # or your Go bin dir for source builds).
 set -euo pipefail
 
-REPO="johnlindquist/gmkit"
+REPO="kstechly/gmkit"
 REPO_URL="https://github.com/$REPO"
 MODULE="github.com/johnlindquist/gmkit"
 

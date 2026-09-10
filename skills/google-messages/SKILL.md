@@ -259,3 +259,13 @@ morning.
 2. For each hit, optionally pull `messages context {message_id}` to show
    surrounding messages.
 3. Render as transcript, grouped by conversation.
+
+## Explicitly requested thread archiving (fork extension)
+
+When the user explicitly authorizes archiving, resolve the exact thread with
+`gmcli chats find` and use `gmcli --json --read-only=false chats archive {conversation_id}`.
+This is separate from the default read-only history workflow above. The command
+verifies the phone status and persists the returned `archived` flag. Do not
+interpret a failed/timed-out operation as proof that the phone was unchanged.
+Existing daemons must use the current binary and allow writes. No TUI or MCP
+archive tool is added by this extension.

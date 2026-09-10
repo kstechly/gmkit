@@ -15,7 +15,7 @@ import (
 )
 
 // readyTimeout is how long send/react wait for the libgm session to come up
-// before giving up. ClientReady normally lands within 1–3 seconds.
+// before giving up. Readiness requires a phone settings response.
 const readyTimeout = 30 * time.Second
 
 func sendCmd() *cobra.Command {
@@ -147,22 +147,13 @@ func runWithConnectedClient(fn func(ctx context.Context, c *gm.Client, st *store
 	pump := gmsync.New(st, logger)
 	client.Subscribe(pump.Handle)
 
-	ready := make(chan error, 1)
-	go func() { ready <- client.WaitForReady(ctx) }()
-
 	if err := client.Connect(); err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
 	defer client.Disconnect()
 
-	select {
-	case err := <-ready:
-		if err != nil {
-			return fmt.Errorf("wait for ready: %w", err)
-		}
-	default:
-		// Some libgm paths return from Connect after the ready event has
-		// already fired. In that case the session is usable.
+	if err := client.WaitForReady(ctx); err != nil {
+		return fmt.Errorf("wait for ready: %w", err)
 	}
 
 	return fn(ctx, client, st)

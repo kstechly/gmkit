@@ -161,6 +161,7 @@ func ConversationRow(c *gmproto.Conversation, platform string) (store.Conversati
 		LastMessageTimeMS: normalizeTimestampMS(c.GetLastMessageTimestamp()),
 		Unread:            c.GetUnread(),
 		Pinned:            c.GetPinned(),
+		Archived:          c.GetStatus() == gmproto.ConversationStatus_ARCHIVED || c.GetStatus() == gmproto.ConversationStatus_KEEP_ARCHIVED,
 	}, true
 }
 

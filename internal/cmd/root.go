@@ -46,7 +46,7 @@ var errReadOnly = errReadOnlyT{}
 type errReadOnlyT struct{}
 
 func (errReadOnlyT) Error() string {
-	return "read-only mode: this command sends through the phone. Re-run with --read-only=false to allow it."
+	return "read-only mode: this command mutates phone state. Re-run with --read-only=false to allow it."
 }
 
 // truncate caps a string to n runes when --full is unset; otherwise returns

@@ -88,8 +88,7 @@ func (c *Client) Subscribe(h EventHandler) {
 }
 
 // Connect opens the long-poll connection. Events flow to subscribers
-// immediately. Returns when the initial sync completes; the connection
-// continues running in a background goroutine inside libgm.
+// asynchronously. Call WaitForReady after Connect before phone mutations.
 func (c *Client) Connect() error {
 	return c.libgm.Connect()
 }
@@ -104,46 +103,11 @@ func (c *Client) IsConnected() bool {
 	return c.libgm.IsConnected()
 }
 
-// WaitForReady blocks until the libgm client emits *events.ClientReady or
-// the context is cancelled. SendMessage and SendReaction need an established
-// session before they can round-trip a response; ClientReady is the earliest
-// signal that the session is up. The handler is removed before returning.
-//
-// Subscribe(c.WaitForReady...) is not the right idiom — this method
-// installs and removes a single-fire subscriber for you.
+// WaitForReady waits for the phone settings delivered by GET_UPDATES during
+// connection setup. libgm v0.6.4 does not emit ClientReady; a live HTTP poll
+// alone also does not establish that the paired phone has responded.
 func (c *Client) WaitForReady(ctx context.Context) error {
-	if c.libgm.IsConnected() {
-		// Already ready — but ClientReady has likely already fired and
-		// won't repeat. Best effort: return immediately.
-		return nil
-	}
-	ready := make(chan struct{}, 1)
-	var fired sync.Once
-
-	c.mu.Lock()
-	idx := len(c.subscribers)
-	c.subscribers = append(c.subscribers, func(evt any) {
-		if _, ok := evt.(*events.ClientReady); ok {
-			fired.Do(func() { close(ready) })
-		}
-	})
-	c.mu.Unlock()
-
-	defer func() {
-		c.mu.Lock()
-		// Remove only our subscriber; preserve any added concurrently.
-		if idx < len(c.subscribers) {
-			c.subscribers = append(c.subscribers[:idx], c.subscribers[idx+1:]...)
-		}
-		c.mu.Unlock()
-	}()
-
-	select {
-	case <-ready:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return c.WaitForSettings(ctx)
 }
 
 // Underlying returns the wrapped *libgm.Client for callers that need access
