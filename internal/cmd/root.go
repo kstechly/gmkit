@@ -60,6 +60,8 @@ func truncate(s string, n int) string {
 
 // Root constructs the top-level *cobra.Command.
 func Root() *cobra.Command {
+	readCoverage = nil
+	readReported = false
 	root := &cobra.Command{
 		Use:           "gmcli",
 		Short:         "Local-first Google Messages CLI and archive",

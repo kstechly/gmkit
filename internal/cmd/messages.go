@@ -55,13 +55,13 @@ func messagesListCmd() *cobra.Command {
 				SenderID:       sender,
 				Since:          since,
 				Until:          until,
-				Limit:          limit,
+				Limit:          limit + 1,
 				Order:          order,
 			})
 			if err != nil {
 				return err
 			}
-			return renderMessages(msgs)
+			return renderMessages(boundRead(msgs, limit))
 		},
 	}
 	c.Flags().StringVar(&convID, "conv", "", "filter by conversation id")
@@ -102,13 +102,16 @@ func messagesSearchCmd() *cobra.Command {
 				ConversationID: convID,
 				Since:          since,
 				Until:          until,
-				Limit:          limit,
+				Limit:          limit + 1,
 			})
 			if err != nil {
 				return err
 			}
 			if flags.jsonOut {
-				return output.JSON(os.Stdout, hits)
+				return readJSON(hits)
+			}
+			if err := reportRead(); err != nil {
+				return err
 			}
 			if len(hits) == 0 {
 				fmt.Fprintln(os.Stderr, "(no matches)")
@@ -153,7 +156,7 @@ func messagesShowCmd() *cobra.Command {
 				return err
 			}
 			if flags.jsonOut {
-				return output.JSON(os.Stdout, m)
+				return readJSON(m)
 			}
 			renderMessageDetail(m)
 			return nil
@@ -191,11 +194,14 @@ func messagesContextCmd() *cobra.Command {
 // renderMessages prints a message slice as a table or JSON.
 func renderMessages(msgs []store.Message) error {
 	if flags.jsonOut {
-		return output.JSON(os.Stdout, msgs)
+		return readJSON(msgs)
 	}
 	if len(msgs) == 0 {
 		fmt.Fprintln(os.Stderr, "(no messages)")
 		return nil
+	}
+	if err := reportRead(); err != nil {
+		return err
 	}
 	rows := make([][]string, 0, len(msgs))
 	for _, m := range msgs {

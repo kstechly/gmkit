@@ -117,7 +117,7 @@ func readAll(r *os.File) (string, error) {
 
 func TestChatsListHumanAndJSON(t *testing.T) {
 	dir := seedStore(t)
-	human := runCmd(t, dir, "chats", "list")
+	human := runCmd(t, dir, "chats", "list", "--source", "cached")
 	if !strings.Contains(human, "c_alice") || !strings.Contains(human, "c_bob") {
 		t.Fatalf("human output missing rows: %q", human)
 	}
@@ -126,9 +126,9 @@ func TestChatsListHumanAndJSON(t *testing.T) {
 	}
 
 	// JSON path. New Root() per call so flags reset.
-	jsonOut := runCmd(t, dir, "--json", "chats", "list")
+	jsonOut := runCmd(t, dir, "--json", "chats", "list", "--source", "cached")
 	var got []map[string]any
-	if err := json.Unmarshal([]byte(jsonOut), &got); err != nil {
+	if err := json.Unmarshal(readData(t, jsonOut), &got); err != nil {
 		t.Fatalf("json: %v\n%s", err, jsonOut)
 	}
 	if len(got) != 2 {
@@ -141,7 +141,7 @@ func TestChatsListHumanAndJSON(t *testing.T) {
 
 func TestChatsShowDisplaysMessages(t *testing.T) {
 	dir := seedStore(t)
-	out := runCmd(t, dir, "chats", "show", "c_alice")
+	out := runCmd(t, dir, "chats", "show", "--source", "cached", "c_alice")
 	if !strings.Contains(out, "dinner sounds great") {
 		t.Fatalf("expected message body, got: %q", out)
 	}
@@ -152,7 +152,7 @@ func TestChatsShowDisplaysMessages(t *testing.T) {
 
 func TestChatsShowLimitUsesMostRecentMessages(t *testing.T) {
 	dir := seedStore(t)
-	out := runCmd(t, dir, "chats", "show", "c_alice", "--limit", "2")
+	out := runCmd(t, dir, "chats", "show", "--source", "cached", "c_alice", "--limit", "2")
 	if strings.Contains(out, "Want to grab dinner tonight?") {
 		t.Fatalf("limit should not include oldest message: %q", out)
 	}
@@ -186,7 +186,7 @@ func TestMessagesShowAndContext(t *testing.T) {
 		t.Fatalf("json leaked internal message fields: %q", jsonOut)
 	}
 	var msg map[string]any
-	if err := json.Unmarshal([]byte(jsonOut), &msg); err != nil {
+	if err := json.Unmarshal(readData(t, jsonOut), &msg); err != nil {
 		t.Fatalf("json: %v\n%s", err, jsonOut)
 	}
 	if _, ok := msg["message_id"]; !ok {
@@ -226,10 +226,27 @@ func TestMessagesListFilters(t *testing.T) {
 	dir := seedStore(t)
 	out := runCmd(t, dir, "--json", "messages", "list", "--conv", "c_alice", "--limit", "10")
 	var msgs []map[string]any
-	if err := json.Unmarshal([]byte(out), &msgs); err != nil {
+	if err := json.Unmarshal(readData(t, out), &msgs); err != nil {
 		t.Fatalf("json: %v\n%s", err, out)
 	}
 	if len(msgs) != 4 {
 		t.Fatalf("expected 4 messages in c_alice, got %d", len(msgs))
 	}
+}
+
+func readData(t *testing.T, s string) json.RawMessage {
+	t.Helper()
+	var r struct {
+		Coverage struct {
+			Source string `json:"source"`
+		} `json:"coverage"`
+		Data json.RawMessage `json:"data"`
+	}
+	if e := json.Unmarshal([]byte(s), &r); e != nil {
+		t.Fatal(e)
+	}
+	if r.Coverage.Source != "cached" {
+		t.Fatalf("expected explicit cached provenance: %s", s)
+	}
+	return r.Data
 }

@@ -6,10 +6,9 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/mdp/qrterminal/v3 v3.2.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
-	github.com/rs/zerolog v1.34.0
+	github.com/rs/zerolog v1.35.1
 	github.com/spf13/cobra v1.8.1
 	go.mau.fi/mautrix-gmessages v0.6.4
-	google.golang.org/protobuf v1.36.6
 	modernc.org/sqlite v1.34.4
 )
 
@@ -26,12 +25,15 @@ require (
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
-	go.mau.fi/util v0.8.8 // indirect
-	golang.org/x/crypto v0.40.0 // indirect
-	golang.org/x/exp v0.0.0-20250711185948-6ae5c78190dc // indirect
+	go.mau.fi/util v0.9.10 // indirect
+	golang.org/x/crypto v0.53.0 // indirect
+	golang.org/x/exp v0.0.0-20260611194520-c48552f49976 // indirect
+	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
-	golang.org/x/sys v0.41.0 // indirect
-	golang.org/x/term v0.33.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/term v0.44.0 // indirect
+	golang.org/x/text v0.38.0 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
 	modernc.org/gc/v3 v3.0.0-20240107210532-573471604cb6 // indirect
 	modernc.org/libc v1.55.3 // indirect
 	modernc.org/mathutil v1.6.0 // indirect
@@ -40,3 +42,5 @@ require (
 	modernc.org/token v1.1.0 // indirect
 	rsc.io/qr v0.2.0 // indirect
 )
+
+replace go.mau.fi/mautrix-gmessages => github.com/MaxGhenis/gmessages v0.0.0-20260703132304-0e43542dfa0e

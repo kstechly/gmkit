@@ -1,7 +1,7 @@
 package store
 
 // schemaVersion is the migration target. Bump when migrations[] grows.
-const schemaVersion = 3
+const schemaVersion = 4
 
 // migrations are applied in order. Each runs in its own transaction; the
 // store records the highest applied version in the schema_version table.
@@ -153,4 +153,9 @@ var migrations = []string{
 
 	INSERT INTO schema_version (version) VALUES (3);
 	`,
+	// v4: folder scan provenance and exact membership of the latest traversal.
+	`CREATE TABLE folder_scans (folder TEXT PRIMARY KEY, report TEXT NOT NULL) STRICT;
+ CREATE TABLE folder_members (folder TEXT NOT NULL, conversation_id TEXT NOT NULL,
+ PRIMARY KEY(folder, conversation_id)) STRICT;
+ INSERT INTO schema_version (version) VALUES (4);`,
 }

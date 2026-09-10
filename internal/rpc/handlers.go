@@ -26,6 +26,10 @@ func (s *Server) dispatch(ctx context.Context, c *serverConn, method string, par
 	case "subscribe":
 		c.subscribed.Store(true)
 		return map[string]any{"subscribed": true}, nil
+	case "chats.scan":
+		return s.handleChatsScan(ctx, params)
+	case "chats.read":
+		return s.handleChatsRead(ctx, params)
 	case "chats.list":
 		return s.handleChatsList(ctx, params)
 	case "chats.find":

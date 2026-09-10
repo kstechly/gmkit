@@ -81,9 +81,10 @@ func (s *Store) CountConversations(ctx context.Context) (int, error) {
 
 // ListConversationOpts filters and paginates ListConversations.
 type ListConversationOpts struct {
-	Limit      int  // max rows; <=0 means 50
-	UnreadOnly bool // only conversations with unread=1
-	Pinned     bool // only pinned threads
+	Folder     string // inbox/archive filters cached status; all/empty includes all known rows
+	Limit      int    // max rows; <=0 means 50
+	UnreadOnly bool   // only conversations with unread=1
+	Pinned     bool   // only pinned threads
 }
 
 // ListConversations returns conversations ordered by last_message_ts DESC.
@@ -99,6 +100,11 @@ func (s *Store) ListConversations(ctx context.Context, opts ListConversationOpts
 		  FROM conversations c
 		  LEFT JOIN aliases al ON al.target_type = 'conversation' AND al.target_id = c.conversation_id`
 	var clauses []string
+	if opts.Folder == "inbox" {
+		clauses = append(clauses, "c.archived=0")
+	} else if opts.Folder == "archive" {
+		clauses = append(clauses, "c.archived=1")
+	}
 	if opts.UnreadOnly {
 		clauses = append(clauses, "c.unread = 1")
 	}

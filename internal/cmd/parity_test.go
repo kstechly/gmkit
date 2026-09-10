@@ -79,7 +79,7 @@ func TestFullFlagDisablesTruncation(t *testing.T) {
 	// list rendering of `Alice Example` — a 13-char string fits already,
 	// so the assertion is that --full doesn't break anything and still
 	// renders the cell intact.
-	full := runCmd(t, dir, "--full", "chats", "list")
+	full := runCmd(t, dir, "--full", "chats", "list", "--source", "cached")
 	if !strings.Contains(full, "Alice Example") {
 		t.Fatalf("--full output missing name: %q", full)
 	}
