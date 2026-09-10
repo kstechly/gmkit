@@ -2,10 +2,11 @@ package store_test
 
 import (
 	"context"
-	"github.com/johnlindquist/gmkit/internal/coverage"
-	"github.com/johnlindquist/gmkit/internal/store"
 	"path/filepath"
 	"testing"
+
+	"github.com/johnlindquist/gmkit/internal/coverage"
+	"github.com/johnlindquist/gmkit/internal/store"
 )
 
 func TestFolderCoverageSurvivesReopenAndFailedRescan(t *testing.T) {

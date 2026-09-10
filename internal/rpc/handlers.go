@@ -10,11 +10,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 
 	"github.com/johnlindquist/gmkit/internal/gm"
 	"github.com/johnlindquist/gmkit/internal/history"
 	"github.com/johnlindquist/gmkit/internal/store"
+	gmsync "github.com/johnlindquist/gmkit/internal/sync"
 )
 
 func (s *Server) dispatch(ctx context.Context, c *serverConn, method string, params json.RawMessage) (any, *Error) {
@@ -26,6 +26,8 @@ func (s *Server) dispatch(ctx context.Context, c *serverConn, method string, par
 	case "subscribe":
 		c.subscribed.Store(true)
 		return map[string]any{"subscribed": true}, nil
+	case "chats.verifyArchive":
+		return s.handleVerifyArchive(ctx, params)
 	case "chats.scan":
 		return s.handleChatsScan(ctx, params)
 	case "chats.read":
@@ -128,7 +130,12 @@ func (s *Server) handleStatus(ctx context.Context) (any, *Error) {
 	if s.deps.Client != nil {
 		connected = s.deps.Client.IsConnected()
 	}
+	cov, err := s.deps.Store.CachedCoverage(ctx)
+	if err != nil {
+		return nil, internalErr(err)
+	}
 	return map[string]any{
+		"coverage":          cov,
 		"connected":         connected,
 		"offline":           s.deps.Client == nil,
 		"auth_expired":      s.authExpired.Load(),
@@ -369,11 +376,8 @@ func (s *Server) handleContactsShow(ctx context.Context, params json.RawMessage)
 	return contact, nil
 }
 
-// handleSyncRefresh pulls a light snapshot from the phone: the most recent
-// inbox conversations plus their latest messages. Clients call it on
-// connect so the archive catches up on anything the long-poll missed while
-// no daemon (or an idle one) was running. Rate-limited; runs in the
-// background and announces completion with a sync.status "refreshed" event.
+// handleSyncRefresh schedules a paginated folder scan. Message history is
+// explicitly not fetched. Completion and coverage arrive in sync.status.
 func (s *Server) handleSyncRefresh(ctx context.Context) (any, *Error) {
 	if s.deps.Client == nil || s.deps.Pump == nil {
 		return nil, &Error{Code: CodeUnavailable, Message: "offline daemon: no phone connection to refresh from"}
@@ -381,7 +385,7 @@ func (s *Server) handleSyncRefresh(ctx context.Context) (any, *Error) {
 	s.refreshMu.Lock()
 	if time.Since(s.lastRefresh) < 30*time.Second {
 		s.refreshMu.Unlock()
-		return map[string]any{"started": false, "reason": "refreshed recently"}, nil
+		return map[string]any{"started": false, "reason": "refresh scheduled recently; inspect completion event for coverage"}, nil
 	}
 	s.lastRefresh = time.Now()
 	s.refreshMu.Unlock()
@@ -624,42 +628,18 @@ func (s *Server) handleSendReact(params json.RawMessage) (any, *Error) {
 	return map[string]any{"reacted": true, "emoji": p.Emoji}, nil
 }
 
-// refreshConversations bounds one sync.refresh pass: how many recent inbox
-// conversations to re-pull, and for how many of those to fetch messages.
-const (
-	refreshConversations = 50
-	refreshMessageConvs  = 15
-	refreshMessagesEach  = 20
-)
-
+// runRefresh uses the same paginated traversal as explicit CLI reads. The
+// "started" reply is only scheduling; the completion event carries coverage.
 func (s *Server) runRefresh() {
-	s.liveMu.Lock()
-	defer s.liveMu.Unlock()
-	ctx := context.Background()
-
-	resp, err := s.deps.Client.Underlying().ListConversations(refreshConversations, gmproto.ListConversationsRequest_INBOX)
-	if err != nil {
-		s.deps.Logger.Warn().Err(err).Msg("sync.refresh: list conversations failed")
-		s.Broadcast(EventSyncStatus, map[string]any{"state": "refresh_failed"})
-		return
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	r, e := s.Scan(ctx, gmsync.ScanOptions{Folder: "all", PageSize: 25, MaxPages: 1000})
+	state := "refreshed"
+	if e != nil {
+		state = "refresh_failed"
+		s.deps.Logger.Warn().Err(e).Msg("Folder refresh incomplete")
 	}
-	fetched := 0
-	for _, conv := range resp.GetConversations() {
-		if conv == nil || conv.GetConversationID() == "" {
-			continue
-		}
-		s.deps.Pump.Handle(conv)
-		if fetched < refreshMessageConvs {
-			if history, err := s.deps.Client.Underlying().FetchMessages(conv.GetConversationID(), refreshMessagesEach, nil); err == nil {
-				s.deps.Pump.ImportMessages(ctx, history.GetMessages())
-			}
-			fetched++
-		}
-	}
-	_ = s.deps.Store.MarkSync(ctx, time.Time{}, time.Now())
-	// Direct pump writes bypass the gm-event broadcaster, so tell clients
-	// to refetch wholesale.
-	s.Broadcast(EventSyncStatus, map[string]any{"state": "refreshed"})
+	s.Broadcast(EventSyncStatus, map[string]any{"state": state, "coverage": r.Coverage})
 }
 
 type historyBackfillParams struct {

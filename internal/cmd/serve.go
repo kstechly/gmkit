@@ -131,11 +131,14 @@ func serveCmd() *cobra.Command {
 				defer client.Disconnect()
 
 				if !noImport {
-					runInitialImport(ctx, client, pump, logger)
+					report, err := runInitialImport(ctx, server, logger)
+					if err != nil {
+						return err
+					}
 					// The import writes through the pump directly, which
 					// bypasses the event broadcaster: tell clients that
 					// connected early to refetch.
-					server.Broadcast(rpc.EventSyncStatus, map[string]any{"state": "refreshed"})
+					server.Broadcast(rpc.EventSyncStatus, map[string]any{"state": "refreshed", "coverage": report.Coverage})
 				}
 			}
 

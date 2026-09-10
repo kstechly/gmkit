@@ -3,9 +3,11 @@ package store
 import (
 	"context"
 	"encoding/json"
+
 	"github.com/johnlindquist/gmkit/internal/coverage"
 )
 
+// SaveFolderScan atomically replaces the latest traversal and its observed membership.
 func (s *Store) SaveFolderScan(ctx context.Context, report coverage.Folder, ids []string) error {
 	b, e := json.Marshal(report)
 	if e != nil {
@@ -29,6 +31,8 @@ func (s *Store) SaveFolderScan(ctx context.Context, report coverage.Folder, ids 
 	}
 	return tx.Commit()
 }
+
+// FolderScans returns recorded traversals; an empty result means unknown coverage.
 func (s *Store) FolderScans(ctx context.Context) ([]coverage.Folder, error) {
 	rows, e := s.db.QueryContext(ctx, "SELECT report FROM folder_scans ORDER BY folder")
 	if e != nil {
@@ -49,6 +53,8 @@ func (s *Store) FolderScans(ctx context.Context) ([]coverage.Folder, error) {
 	}
 	return out, rows.Err()
 }
+
+// CachedCoverage reports scan provenance without equating it with connection activity.
 func (s *Store) CachedCoverage(ctx context.Context) (coverage.Read, error) {
 	scans, e := s.FolderScans(ctx)
 	return coverage.Read{Source: "cached", Folder: "all_known", FolderScans: scans, MessageHistory: coverage.Messages{Scope: "local_cache", StopReason: "history_coverage_unknown"}}, e

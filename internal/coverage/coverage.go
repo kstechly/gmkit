@@ -22,11 +22,12 @@ type Messages struct {
 	RecordsImported    int    `json:"records_imported"`
 }
 type Read struct {
-	Source         string   `json:"source"`
-	Folder         string   `json:"folder"`
-	FolderScans    []Folder `json:"folder_scans"`
-	MessageHistory Messages `json:"message_history"`
-	Truncated      bool     `json:"truncated"`
+	ContactsImported int      `json:"contacts_imported,omitempty"`
+	Source           string   `json:"source"`
+	Folder           string   `json:"folder"`
+	FolderScans      []Folder `json:"folder_scans"`
+	MessageHistory   Messages `json:"message_history"`
+	Truncated        bool     `json:"truncated"`
 }
 type Result[T any] struct {
 	Coverage Read `json:"coverage"`

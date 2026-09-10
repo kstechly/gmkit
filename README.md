@@ -96,13 +96,14 @@ the Rust TUI when Cargo is installed.
 #    Google Messages app on your phone, Settings → Device pairing → QR code).
 gmcli auth
 
-# 2. Sync messages from the phone into the local database. --follow keeps
-#    the connection open and writes new messages as they arrive.
-gmcli sync --follow
+# 2. Scan both folders and refresh contacts; explicitly sample recent messages.
+gmcli sync --messages-per-thread 10
+# Add --follow to stream new events after the scan.
 
-# 3. Query the local archive (read-only).
-gmcli chats list                              # most-recent conversations
-gmcli chats show <conversation-id>            # header + recent messages
+# 3. Live chat reads; message search/list query the explicitly labeled cache.
+gmcli chats list --folder inbox                # complete live scan, bounded output
+gmcli chats show <conversation-id>            # live header + recent message sample
+gmcli chats list --source cached --folder all # offline, all known cached rows
 gmcli messages search "dinner"                # FTS5 across all conversations
 gmcli messages list --conv <conv-id>          # message list with filters
 gmcli messages show <message-id>              # single message detail
@@ -130,7 +131,7 @@ gmcli media download --message <msg-id>
 
 # Every command supports --json for machine-readable output and --full to
 # disable truncation in tables.
-gmcli --json chats list | jq '.[0].name'
+gmcli --json chats list | jq '.data[0].name'
 ```
 
 ## Daemon, TUI, and agents
@@ -281,7 +282,49 @@ With no daemon, it connects for this operation and disconnects afterward.
 A failed readback or timeout is an error, even if Google acknowledged the write;
 the remote change may still have taken effect. No messages are deleted.
 
-After upgrading from v0.4.0, run `gmcli sync` without a running daemon to refresh
-archive flags that the old sync code incorrectly stored as false. `chats list`
-continues to show both inbox and archived conversations. No schema migration or
-re-pairing is needed. Archive is exposed through CLI/RPC, not the TUI or MCP tools.
+The coverage cutover migrates the database to schema 4. Old rows are retained;
+their scan coverage starts as unknown. Run `gmcli sync` to establish current
+folder membership. Restart an older daemon before using the new commands.
+No re-pairing is needed.
+
+## Live reads, cached reads, and coverage
+
+`chats list`, `chats find`, and `chats show` default to `--source live` and use
+the existing daemon when present. `--source cached` makes an offline read
+explicit. `chats list` defaults to `--folder inbox`; choose `archive` or `all`.
+Message search/list/show/context remain local index queries and label themselves
+`source=cached`. A search miss never proves absence from phone history.
+
+Chat/message query JSON is now `{ "coverage": {...}, "data": ... }`, not a bare
+array. Text output prints coverage to stderr. `coverage` reports source, folder,
+folder scan times/counts/pages, message-history scope, and output truncation.
+`complete=true` on a folder means its cursor was exhausted without errors during
+that traversal; it is not an atomic snapshot or a promise about future messages.
+`--limit` caps output only. `--page-size` is 1..100 (default 25); `--max-pages`
+defaults to 1000 per folder. Budget exhaustion, repeated/opaque cursors, invalid
+folder rows, persistence failures, and phone errors produce nonzero exits and
+partial coverage. A short page with a cursor is **not** the end.
+
+`sync` scans both folders and contacts. Message sampling is opt-in with
+`--messages-per-thread N`; it never implies complete history. `history backfill`
+reports its cursor stop reason and traversal completion separately from whole
+history completeness. Starting at the oldest cached message cannot prove that
+newer cache gaps do not exist. `doctor` and daemon `status` distinguish recorded
+scans from connection activity. Daemon refresh now uses the same folder scanner.
+
+`chats archive ID` waits up to five seconds for status propagation after the
+acknowledgment without resending the mutation. Its JSON contains `conversation`
+and `verification_scope: "individual_remote_readback"`. For one thread, add
+`--verify-folders`; after a batch, use the read-only command:
+
+```sh
+gmcli --json chats verify-archive ID1 ID2 ID3
+```
+
+It scans inbox and archive completely and reads each target individually.
+Disagreement returns nonzero with per-target `individual_status`, `in_inbox`,
+`in_archive`, and `verified` fields. Neither incomplete scans nor failed reads
+can produce verified success. This verifies state at read time; new activity can
+subsequently move a thread back to the inbox.
+
+Protocol investigation and live evidence: [folder pagination](docs/research/folder-pagination.md).

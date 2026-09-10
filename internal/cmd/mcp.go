@@ -10,6 +10,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
 
+	"github.com/johnlindquist/gmkit/internal/coverage"
 	"github.com/johnlindquist/gmkit/internal/daemonctl"
 	"github.com/johnlindquist/gmkit/internal/history"
 	"github.com/johnlindquist/gmkit/internal/paths"
@@ -123,7 +124,8 @@ func newMCPServer(st *store.Store, layout paths.Layout) *mcp.Server {
 		UnreadOnly bool `json:"unread_only,omitempty"`
 	}
 	type chatsOut struct {
-		Chats []chatSummary `json:"chats"`
+		Coverage coverage.Read `json:"coverage"`
+		Chats    []chatSummary `json:"chats"`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "list_chats",
@@ -136,11 +138,19 @@ func newMCPServer(st *store.Store, layout paths.Layout) *mcp.Server {
 		if limit <= 0 {
 			limit = 25
 		}
-		chats, err := st.ListConversations(ctx, store.ListConversationOpts{Limit: limit, UnreadOnly: in.UnreadOnly})
+		chats, err := st.ListConversations(ctx, store.ListConversationOpts{Limit: limit + 1, UnreadOnly: in.UnreadOnly})
 		if err != nil {
 			return nil, chatsOut{}, err
 		}
-		return nil, chatsOut{Chats: summarize(chats)}, nil
+		cov, e := st.CachedCoverage(ctx)
+		if e != nil {
+			return nil, chatsOut{}, e
+		}
+		cov.Truncated = len(chats) > limit
+		if cov.Truncated {
+			chats = chats[:limit]
+		}
+		return nil, chatsOut{Coverage: cov, Chats: summarize(chats)}, nil
 	})
 
 	type findChatsIn struct {
@@ -158,11 +168,23 @@ func newMCPServer(st *store.Store, layout paths.Layout) *mcp.Server {
 		if in.Query == "" {
 			return nil, chatsOut{}, errors.New("query is required (a name, alias, or phone number fragment)")
 		}
-		chats, err := st.FindConversations(ctx, in.Query, in.Limit)
+		limit := in.Limit
+		if limit <= 0 {
+			limit = 25
+		}
+		chats, err := st.FindConversations(ctx, in.Query, limit+1)
 		if err != nil {
 			return nil, chatsOut{}, err
 		}
-		return nil, chatsOut{Chats: summarize(chats)}, nil
+		cov, e := st.CachedCoverage(ctx)
+		if e != nil {
+			return nil, chatsOut{}, e
+		}
+		cov.Truncated = len(chats) > limit
+		if cov.Truncated {
+			chats = chats[:limit]
+		}
+		return nil, chatsOut{Coverage: cov, Chats: summarize(chats)}, nil
 	})
 
 	type searchMessagesIn struct {
@@ -173,7 +195,8 @@ func newMCPServer(st *store.Store, layout paths.Layout) *mcp.Server {
 		Limit          int    `json:"limit,omitempty"`
 	}
 	type searchMessagesOut struct {
-		Hits []store.RichHit `json:"hits"`
+		Coverage coverage.Read   `json:"coverage"`
+		Hits     []store.RichHit `json:"hits"`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "search_messages",
@@ -197,17 +220,29 @@ func newMCPServer(st *store.Store, layout paths.Layout) *mcp.Server {
 		if err != nil {
 			return nil, searchMessagesOut{}, fmt.Errorf("until: %w", err)
 		}
+		limit := in.Limit
+		if limit <= 0 {
+			limit = 50
+		}
 		hits, err := st.SearchMessagesRich(ctx, store.SearchOpts{
 			Query:          in.Query,
 			ConversationID: in.ConversationID,
 			Since:          since,
 			Until:          until,
-			Limit:          in.Limit,
+			Limit:          limit + 1,
 		})
 		if err != nil {
 			return nil, searchMessagesOut{}, err
 		}
-		return nil, searchMessagesOut{Hits: hits}, nil
+		cov, e := st.CachedCoverage(ctx)
+		if e != nil {
+			return nil, searchMessagesOut{}, e
+		}
+		cov.Truncated = len(hits) > limit
+		if cov.Truncated {
+			hits = hits[:limit]
+		}
+		return nil, searchMessagesOut{Coverage: cov, Hits: hits}, nil
 	})
 
 	type listMessagesIn struct {
@@ -218,6 +253,7 @@ func newMCPServer(st *store.Store, layout paths.Layout) *mcp.Server {
 		Order          string `json:"order,omitempty"`
 	}
 	type messagesOut struct {
+		Coverage         coverage.Read       `json:"coverage"`
 		ConversationName string              `json:"conversation_name,omitempty"`
 		Messages         []store.RichMessage `json:"messages"`
 	}
@@ -238,17 +274,29 @@ func newMCPServer(st *store.Store, layout paths.Layout) *mcp.Server {
 		if err != nil {
 			return nil, messagesOut{}, fmt.Errorf("until: %w", err)
 		}
+		limit := in.Limit
+		if limit <= 0 {
+			limit = 50
+		}
 		msgs, err := st.ListMessages(ctx, store.ListMessageOpts{
 			ConversationID: in.ConversationID,
 			Since:          since,
 			Until:          until,
-			Limit:          in.Limit,
+			Limit:          limit + 1,
 			Order:          in.Order,
 		})
 		if err != nil {
 			return nil, messagesOut{}, err
 		}
-		out := messagesOut{Messages: st.EnrichMessages(ctx, msgs)}
+		cov, e := st.CachedCoverage(ctx)
+		if e != nil {
+			return nil, messagesOut{}, e
+		}
+		cov.Truncated = len(msgs) > limit
+		if cov.Truncated {
+			msgs = msgs[:limit]
+		}
+		out := messagesOut{Coverage: cov, Messages: st.EnrichMessages(ctx, msgs)}
 		if conv, err := st.GetConversation(ctx, in.ConversationID); err == nil {
 			out.ConversationName = conv.DisplayName()
 		}
@@ -277,7 +325,11 @@ func newMCPServer(st *store.Store, layout paths.Layout) *mcp.Server {
 		if err != nil {
 			return nil, messagesOut{}, err
 		}
-		out := messagesOut{Messages: st.EnrichMessages(ctx, msgs)}
+		cov, e := st.CachedCoverage(ctx)
+		if e != nil {
+			return nil, messagesOut{}, e
+		}
+		out := messagesOut{Coverage: cov, Messages: st.EnrichMessages(ctx, msgs)}
 		if len(msgs) > 0 {
 			if conv, err := st.GetConversation(ctx, msgs[0].ConversationID); err == nil {
 				out.ConversationName = conv.DisplayName()

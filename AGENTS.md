@@ -12,7 +12,7 @@
 - `internal/output/`: JSON and tabular rendering helpers.
 - `internal/paths/` and `internal/logging/`: environment paths and logging setup.
 - `gmtui/`: Rust ratatui TUI client for the daemon (own Cargo crate; `cargo fmt && cargo clippy && cargo build` before committing changes there).
-- `skills/google-messages/`: bundled assistant skill; update when agent-facing CLI behavior changes.
+- `skills/google-messages/`: upstream bundled skill. Kaya’s active Codex/Claude skill is machine-local at `~/.codex/skills/google-messages-cli`; maintain that local skill for this fork’s interface.
 - `docs/research/`: design notes and protocol research.
 
 Tests live beside their packages as `*_test.go`.
@@ -34,8 +34,8 @@ Use the user's real store for requested personal message tasks unless the user a
 
 To refresh the local archive before searching:
 
-- Run `./gmcli sync` for a one-shot import. Current sync imports contacts, up to 500 inbox conversations, up to 500 archived conversations, and recent messages for each.
-- Run `./gmcli chats list --limit 100` to inspect known conversations.
+- Run `./gmcli sync` for a one-shot import. Sync follows inbox/archive cursors and imports contacts; use `--messages-per-thread N` to request a recent sample. Check coverage and exit status. A short page can still have a continuation cursor.
+- Run `./gmcli chats list --folder inbox --limit 100` for a live scan. `--limit` only limits output; inspect `coverage.truncated`. Use `--source cached --folder all` for known cached rows.
 - Run `./gmcli contacts search "<name-or-number>" --limit 20` to find a participant.
 - Run `./gmcli messages search "<fts-query>" --limit 50` to search archived message bodies. This is local SQLite FTS only; it cannot find conversations that have not been synced or backfilled.
 
@@ -64,6 +64,7 @@ To send a text:
 - gmtui, `gmcli mcp`, and `gmcli approvals` auto-start the daemon (`serve --auto`: approval-gated sends, idle-exit 10m, logs to `<store>/daemon.log`) — users don't manage daemon lifecycle. A store without a session auto-starts offline.
 - `./gmcli mcp` is the MCP stdio server for agent runtimes. Read tools hit SQLite directly; `send_text`/`backfill_history` go through the daemon. `send_text` returning `status: "pending"` means queued for human approval, NOT sent — report it that way.
 - To resolve a person to a conversation, prefer `./gmcli chats find "<name-or-number>"` (or the `find_chats` MCP tool) over manual contacts/chats cross-referencing.
+- Chat/message query JSON uses `{coverage,data}`; archive receipts use `{conversation,verification_scope}`. Use `chats verify-archive ID...` to compare individual status with complete folder scans.
 - `./gmcli messages search` accepts natural-language queries: raw FTS5 first, then a quoted AND fallback, then OR. Rich results include sender/conversation names.
 - `./gmcli approvals list|approve|deny` reviews the queue from the CLI; `approve` performs the send and requires `--read-only=false`.
 

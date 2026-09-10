@@ -116,6 +116,7 @@ func printBackfillResult(res history.BackfillResult) error {
 	}
 	fmt.Fprintf(os.Stderr, "Backfill for %s: fetched %d message record(s), chat messages %d -> %d (+%d), using %d request(s)\n",
 		res.ConversationID, res.FetchedMessages, res.MessagesBefore, res.MessagesAfter, res.MessagesAddedForChat, res.Requests)
+	fmt.Fprintf(os.Stderr, "source=%s traversal_complete=%t history_complete=%t stop=%s (older-prefix traversal does not prove gap-free whole history)\n", res.Source, res.TraversalComplete, res.HistoryComplete, res.StopReason)
 	return nil
 }
 

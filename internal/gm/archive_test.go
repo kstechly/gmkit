@@ -3,10 +3,10 @@ package gm
 import (
 	"context"
 	"errors"
-
-	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 	"testing"
 	"time"
+
+	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 )
 
 type fakeArchiveAPI struct {
@@ -130,5 +130,40 @@ func TestReadinessAcceptsSettingsAfterWaitStarts(t *testing.T) {
 	c.dispatch(&gmproto.Settings{})
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+type delayedArchiveAPI struct{ fakeArchiveAPI }
+
+func (f *delayedArchiveAPI) GetConversation(id string) (*gmproto.Conversation, error) {
+	f.reads++
+	status := gmproto.ConversationStatus_ACTIVE
+	if f.reads >= 4 {
+		status = gmproto.ConversationStatus_ARCHIVED
+	}
+	return &gmproto.Conversation{ConversationID: id, Status: status}, nil
+}
+func TestArchiveWaitsForPropagationWithoutResending(t *testing.T) {
+	f := &delayedArchiveAPI{fakeArchiveAPI: fakeArchiveAPI{success: true}}
+	r, e := archiveConversation(context.Background(), f, "c")
+	if e != nil || r.GetStatus() != gmproto.ConversationStatus_ARCHIVED || f.writes != 1 {
+		t.Fatalf("r=%v err=%v writes=%d", r, e, f.writes)
+	}
+}
+
+func TestFolderAndIndividualArchiveMustAgree(t *testing.T) {
+	for _, tc := range []struct {
+		status       gmproto.ConversationStatus
+		in, ar, want bool
+	}{
+		{gmproto.ConversationStatus_ARCHIVED, false, true, true},
+		{gmproto.ConversationStatus_ACTIVE, false, true, false},
+		{gmproto.ConversationStatus_ARCHIVED, true, true, false},
+		{gmproto.ConversationStatus_ARCHIVED, false, false, false},
+	} {
+		r := checkArchive("c", tc.status, tc.in, tc.ar)
+		if r.Verified != tc.want {
+			t.Fatalf("%+v", r)
+		}
 	}
 }

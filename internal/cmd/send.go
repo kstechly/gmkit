@@ -122,16 +122,19 @@ func sendReactCmd() *cobra.Command {
 // invokes fn with both. Disconnects on return. Bounds the overall operation
 // at twice readyTimeout — enough for WaitForReady plus the actual write.
 func runWithConnectedClient(fn func(ctx context.Context, c *gm.Client, st *store.Store) error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*readyTimeout)
+	defer cancel()
+	return runWithConnectedContext(ctx, fn)
+}
+func runWithConnectedContext(parent context.Context, fn func(ctx context.Context, c *gm.Client, st *store.Store) error) error {
 	layout, err := resolveLayout()
 	if err != nil {
 		return err
 	}
 	logger := newLogger()
 
-	ctx, cancel := signalContext(context.Background())
+	ctx, cancel := signalContext(parent)
 	defer cancel()
-	ctx, cancelTimeout := context.WithTimeout(ctx, 2*readyTimeout)
-	defer cancelTimeout()
 
 	st, err := store.Open(ctx, layout.Database)
 	if err != nil {

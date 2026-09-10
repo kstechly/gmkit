@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
-
 	"go.mau.fi/mautrix-gmessages/pkg/libgm"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/events"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
@@ -92,7 +91,7 @@ func (p *Pump) fail(err error) {
 }
 
 // ImportContacts persists a full contact-list response from libgm.
-func (p *Pump) ImportContacts(ctx context.Context, contacts []*gmproto.Contact) int {
+func (p *Pump) ImportContacts(ctx context.Context, contacts []*gmproto.Contact) (int, error) {
 	imported := 0
 	for _, c := range contacts {
 		if c == nil || c.GetParticipantID() == "" {
@@ -109,26 +108,26 @@ func (p *Pump) ImportContacts(ctx context.Context, contacts []*gmproto.Contact) 
 			AvatarColor:     c.GetAvatarHexColor(),
 		}
 		if err := p.store.UpsertContact(ctx, row); err != nil {
-			p.logger.Error().Err(err).Str("participant_id", row.ParticipantID).Msg("Upsert contact failed")
-			continue
+			return imported, err
 		}
 		imported++
 	}
-	return imported
+	return imported, nil
 }
 
 // ImportMessages persists message-history rows fetched on demand. These are
 // marked old so they don't advance the live-event freshness timestamp.
-func (p *Pump) ImportMessages(ctx context.Context, messages []*gmproto.Message) int {
-	imported := 0
-	for _, m := range messages {
-		if m == nil || m.GetMessageID() == "" {
-			continue
+func (p *Pump) ImportMessages(ctx context.Context, messages []*gmproto.Message) (int, error) {
+	for i, m := range messages {
+		row, ok := MessageRow(&libgm.WrappedMessage{Message: m, IsOld: true}, p.platform)
+		if !ok {
+			return i, fmt.Errorf("invalid history message record")
 		}
-		p.onMessage(ctx, &libgm.WrappedMessage{Message: m, IsOld: true})
-		imported++
+		if err := p.store.UpsertMessage(ctx, row); err != nil {
+			return i, err
+		}
 	}
-	return imported
+	return len(messages), nil
 }
 
 func (p *Pump) onClientReady(ctx context.Context, e *events.ClientReady) {

@@ -10,25 +10,27 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/johnlindquist/gmkit/internal/coverage"
 	"github.com/johnlindquist/gmkit/internal/gm"
 	"github.com/johnlindquist/gmkit/internal/store"
 )
 
 type doctorReport struct {
-	StoreRoot            string    `json:"store_root"`
-	SessionExists        bool      `json:"session_exists"`
-	SessionPath          string    `json:"session_path"`
-	Paired               bool      `json:"paired"`
-	PhoneID              string    `json:"phone_id,omitempty"`
-	StoreOpens           bool      `json:"store_opens"`
-	SchemaVersion        int       `json:"schema_version,omitempty"`
-	Conversations        int       `json:"conversations,omitempty"`
-	Messages             int       `json:"messages,omitempty"`
-	Contacts             int       `json:"contacts,omitempty"`
-	LastEventTime        time.Time `json:"last_event_time,omitempty"`
-	LastConnectTime      time.Time `json:"last_connect_time,omitempty"`
-	LastSyncActivityTime time.Time `json:"last_sync_activity_time,omitempty"`
-	Issues               []string  `json:"issues,omitempty"`
+	Coverage             coverage.Read `json:"coverage"`
+	StoreRoot            string        `json:"store_root"`
+	SessionExists        bool          `json:"session_exists"`
+	SessionPath          string        `json:"session_path"`
+	Paired               bool          `json:"paired"`
+	PhoneID              string        `json:"phone_id,omitempty"`
+	StoreOpens           bool          `json:"store_opens"`
+	SchemaVersion        int           `json:"schema_version,omitempty"`
+	Conversations        int           `json:"conversations,omitempty"`
+	Messages             int           `json:"messages,omitempty"`
+	Contacts             int           `json:"contacts,omitempty"`
+	LastEventTime        time.Time     `json:"last_event_time,omitempty"`
+	LastConnectTime      time.Time     `json:"last_connect_time,omitempty"`
+	LastSyncActivityTime time.Time     `json:"last_sync_activity_time,omitempty"`
+	Issues               []string      `json:"issues,omitempty"`
 }
 
 func doctorCmd() *cobra.Command {
@@ -105,6 +107,10 @@ func runDoctor(ctx context.Context) doctorReport {
 	if n, err := st.CountContacts(ctx); err == nil {
 		r.Contacts = n
 	}
+	r.Coverage, err = st.CachedCoverage(ctx)
+	if err != nil {
+		r.Issues = append(r.Issues, err.Error())
+	}
 	if state, err := st.SyncState(ctx); err == nil {
 		r.LastEventTime = state.LastEventTime
 		r.LastConnectTime = state.LastConnectTime
@@ -114,7 +120,7 @@ func runDoctor(ctx context.Context) doctorReport {
 }
 
 func renderDoctor(r doctorReport) {
-	fmt.Println("gmcli doctor")
+	fmt.Println("gmcli doctor (connection activity is not scan coverage)")
 	fmt.Println("============")
 	fmt.Printf("  store root:       %s\n", r.StoreRoot)
 	fmt.Printf("  session present:  %v\n", r.SessionExists)
@@ -143,6 +149,12 @@ func renderDoctor(r doctorReport) {
 		fmt.Printf("  last sync activity: %s\n", r.LastSyncActivityTime.Format(time.RFC3339))
 	} else {
 		fmt.Printf("  last sync activity: (none yet)\n")
+	}
+	if len(r.Coverage.FolderScans) == 0 {
+		fmt.Println("  folder coverage: unknown")
+	}
+	for _, s := range r.Coverage.FolderScans {
+		fmt.Printf("  %s scan: %s complete=%t count=%d stop=%s\n", s.Folder, s.ScannedAt.Format(time.RFC3339), s.Complete, s.Count, s.StopReason)
 	}
 	if len(r.Issues) > 0 {
 		fmt.Println()

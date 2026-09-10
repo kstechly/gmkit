@@ -3,8 +3,9 @@ package gm
 import (
 	"context"
 	"errors"
-	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 	"testing"
+
+	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 )
 
 type scanFake struct {

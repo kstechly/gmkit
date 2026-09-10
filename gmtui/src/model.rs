@@ -140,6 +140,7 @@ pub struct Approval {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct DaemonStatus {
+    pub coverage: Box<ReadCoverage>,
     #[serde(default)]
     pub connected: bool,
     /// Daemon deliberately running without a phone connection (--offline).
@@ -221,4 +222,70 @@ pub fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// Provenance is independent of connection liveness. An empty folder_scans
+/// list means coverage is unknown, even when connected is true.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ReadCoverage {
+    #[serde(default)]
+    pub contacts_imported: usize,
+    pub source: String,
+    pub folder: String,
+    pub folder_scans: Vec<FolderScan>,
+    pub message_history: MessageCoverage,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct FolderScan {
+    pub folder: String,
+    pub started_at: String,
+    pub scanned_at: String,
+    pub complete: bool,
+    pub stop_reason: String,
+    pub pages: usize,
+    pub page_size: usize,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct MessageCoverage {
+    pub scope: String,
+    pub complete: bool,
+    pub stop_reason: String,
+    pub requested_per_thread: usize,
+    pub threads_fetched: usize,
+    pub records_imported: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FolderScanResult {
+    pub coverage: Box<ReadCoverage>,
+    pub data: Vec<Conversation>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LiveChatRead {
+    pub coverage: Box<ReadCoverage>,
+    pub conversation: Conversation,
+    pub messages: Vec<Message>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ArchiveCheck {
+    pub conversation_id: String,
+    pub individual_status: String,
+    pub in_inbox: bool,
+    pub in_archive: bool,
+    pub verified: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ArchiveVerification {
+    pub source: String,
+    pub checked_at: String,
+    pub folder_scans: Vec<FolderScan>,
+    pub checks: Vec<ArchiveCheck>,
+    pub verified: bool,
 }

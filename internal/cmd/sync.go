@@ -8,9 +8,10 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
-	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 
 	"github.com/johnlindquist/gmkit/internal/gm"
+	"github.com/johnlindquist/gmkit/internal/output"
+	"github.com/johnlindquist/gmkit/internal/rpc"
 	"github.com/johnlindquist/gmkit/internal/store"
 	gmsync "github.com/johnlindquist/gmkit/internal/sync"
 )
@@ -19,113 +20,87 @@ const syncHeartbeatInterval = 5 * time.Minute
 
 func syncCmd() *cobra.Command {
 	var follow bool
-	c := &cobra.Command{
-		Use:   "sync",
-		Short: "Connect to Google Messages and write events into the local store",
-		Long: "Open the long-poll connection to your paired phone and persist incoming " +
-			"conversations, messages, and contacts into the SQLite store. With --follow, " +
-			"the connection stays open until interrupted; without it, the command runs the " +
-			"initial-sync pass and exits.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			layout, err := resolveLayout()
-			if err != nil {
-				return err
+	o := gmsync.ScanOptions{}
+	c := &cobra.Command{Use: "sync", Short: "Scan phone folders with explicit coverage; optionally import recent messages", RunE: func(cmd *cobra.Command, args []string) error {
+		r, e := scanPhone(o)
+		readCoverage = &r.Coverage
+		if flags.jsonOut {
+			if out := output.JSON(os.Stdout, r.Coverage); out != nil {
+				return out
 			}
-			logger := newLogger()
-
-			ctx, cancel := signalContext(context.Background())
-			defer cancel()
-
-			st, err := store.Open(ctx, layout.Database)
-			if err != nil {
-				return fmt.Errorf("open store: %w", err)
+		} else {
+			if out := reportRead(); out != nil {
+				return out
 			}
-			defer st.Close()
-
-			client, err := gm.Open(layout, logger)
-			if err != nil {
-				return err
-			}
-
-			pump := gmsync.New(st, logger)
-			client.Subscribe(pump.Handle)
-
-			fmt.Fprintln(os.Stderr, "Connecting to Google Messages relay...")
-			if err := client.Connect(); err != nil {
-				return fmt.Errorf("connect: %w", err)
-			}
-			defer client.Disconnect()
-
-			runInitialImport(ctx, client, pump, logger)
-
-			if !follow {
-				select {
-				case err := <-pump.Fatal():
-					return err
-				default:
-				}
-				fmt.Fprintln(os.Stderr, "Initial sync complete. Pass --follow to stay connected.")
+		}
+		if e != nil {
+			return e
+		}
+		if !follow {
+			return nil
+		}
+		layout, e := resolveLayout()
+		if e != nil {
+			return e
+		}
+		if _, e = os.Stat(layout.Socket); e == nil {
+			return fmt.Errorf("daemon owns this session; use its event subscription instead of sync --follow")
+		}
+		ctx, cancel := signalContext(cmd.Context())
+		defer cancel()
+		st, e := store.Open(ctx, layout.Database)
+		if e != nil {
+			return e
+		}
+		defer st.Close()
+		client, e := gm.Open(layout, newLogger())
+		if e != nil {
+			return e
+		}
+		pump := gmsync.New(st, newLogger())
+		client.Subscribe(pump.Handle)
+		if e = client.Connect(); e != nil {
+			return e
+		}
+		defer client.Disconnect()
+		fmt.Fprintln(os.Stderr, "Streaming phone events; connection activity does not establish folder coverage.")
+		heartbeat := time.NewTicker(syncHeartbeatInterval)
+		defer heartbeat.Stop()
+		for {
+			select {
+			case <-ctx.Done():
 				return nil
-			}
-
-			fmt.Fprintln(os.Stderr, "Connected. Streaming events. Ctrl-C to stop.")
-			heartbeat := time.NewTicker(syncHeartbeatInterval)
-			defer heartbeat.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					fmt.Fprintln(os.Stderr, "Disconnecting...")
-					return nil
-				case err := <-pump.Fatal():
-					return err
-				case <-heartbeat.C:
-					if err := st.TouchSync(ctx); err != nil {
-						logger.Debug().Err(err).Msg("sync heartbeat failed")
-					}
+			case e := <-pump.Fatal():
+				return e
+			case <-heartbeat.C:
+				if e = st.TouchSync(ctx); e != nil {
+					return e
 				}
 			}
-		},
-	}
-	c.Flags().BoolVar(&follow, "follow", false, "stay connected and stream events until interrupted")
+		}
+	}}
+	// SPEC-AMBIGUITY: (2026-09-10 User asked for "okay do this cutover" but this could mean
+	// 1. Sync always downloads recent messages for every thread.
+	// 2. Sync enumerates folders by default, with message sampling explicitly requested.
+	// Choice defaulted to: 2 because complete folder coverage should be fast and independent of history depth.
+	c.Flags().BoolVar(&o.Contacts, "contacts", true, "also refresh contacts")
+	c.Flags().StringVar(&o.Folder, "folder", "all", "inbox, archive, or all")
+	c.Flags().IntVar(&o.PageSize, "page-size", 25, "phone page size, 1..100")
+	c.Flags().IntVar(&o.MaxPages, "max-pages", 1000, "maximum pages per folder; exhaustion is an error")
+	c.Flags().IntVar(&o.Messages, "messages-per-thread", 0, "recent records to request per thread; 0 scans folders only")
+	c.Flags().BoolVar(&follow, "follow", false, "stream phone events after the scan")
 	return c
 }
 
-// runInitialImport pulls contacts and recent conversation history for the
-// inbox and archive folders through an already-connected client. Shared by
-// `gmcli sync` and `gmcli serve`; failures are logged, not fatal, because a
-// partially-imported archive is still useful.
-func runInitialImport(ctx context.Context, client *gm.Client, pump *gmsync.Pump, logger zerolog.Logger) {
-	if resp, err := client.Underlying().ListContacts(); err != nil {
-		logger.Warn().Err(err).Msg("Contact import failed")
+// Startup and explicit refresh use the same scanner and propagate failures.
+func runInitialImport(ctx context.Context, server *rpc.Server, logger zerolog.Logger) (gmsync.ScanResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	r, e := server.Scan(ctx, gmsync.ScanOptions{Folder: "all", PageSize: 25, MaxPages: 1000, Contacts: true})
+	if e != nil {
+		logger.Error().Err(e).Msg("Folder scan incomplete")
 	} else {
-		imported := pump.ImportContacts(ctx, resp.GetContacts())
-		logger.Info().Int("contacts", imported).Msg("Imported contacts")
+		logger.Info().Int("conversations", len(r.Conversations)).Msg("Folder cursors exhausted; message history not requested")
 	}
-
-	for _, folder := range []struct {
-		name   string
-		folder gmproto.ListConversationsRequest_Folder
-	}{
-		{"INBOX", gmproto.ListConversationsRequest_INBOX},
-		{"ARCHIVE", gmproto.ListConversationsRequest_ARCHIVE},
-	} {
-		if resp, err := client.Underlying().ListConversations(500, folder.folder); err != nil {
-			logger.Warn().Err(err).Str("folder", folder.name).Msg("Conversation import failed")
-		} else {
-			convs, msgs := 0, 0
-			for _, conv := range resp.GetConversations() {
-				if conv == nil || conv.GetConversationID() == "" {
-					continue
-				}
-				pump.Handle(conv)
-				convs++
-				if history, err := client.Underlying().FetchMessages(conv.GetConversationID(), 10, nil); err != nil {
-					logger.Debug().Err(err).Str("conversation_id", conv.GetConversationID()).Msg("Recent message import failed")
-				} else {
-					msgs += pump.ImportMessages(ctx, history.GetMessages())
-				}
-			}
-			logger.Info().Str("folder", folder.name).Int("conversations", convs).Int("messages", msgs).Msg("Imported recent conversation history")
-		}
-	}
+	return r, e
 }

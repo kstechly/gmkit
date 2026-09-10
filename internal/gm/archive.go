@@ -3,6 +3,7 @@ package gm
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 )
@@ -79,12 +80,25 @@ func archiveAndReadBack(ctx context.Context, api archiveAPI, id string) (*gmprot
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	conv, err = api.GetConversation(id)
-	if err != nil {
-		return nil, fmt.Errorf("archive acknowledged but readback failed: %w", err)
+	// Acknowledgment and visible state can arrive separately. Poll reads only;
+	// never resend a mutation merely because its result is not visible yet.
+	verifyCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	for {
+		conv, err = api.GetConversation(id)
+		if err != nil {
+			return nil, fmt.Errorf("archive acknowledged but readback failed: %w", err)
+		}
+		if conv.GetConversationID() != id {
+			return nil, fmt.Errorf("archive acknowledged but readback returned wrong id %q", conv.GetConversationID())
+		}
+		if conv.GetStatus() == gmproto.ConversationStatus_ARCHIVED || conv.GetStatus() == gmproto.ConversationStatus_KEEP_ARCHIVED {
+			return conv, nil
+		}
+		select {
+		case <-verifyCtx.Done():
+			return nil, fmt.Errorf("archive acknowledged but not verified for %s: status=%s: %w", id, conv.GetStatus(), verifyCtx.Err())
+		case <-time.After(250 * time.Millisecond):
+		}
 	}
-	if conv.GetConversationID() != id || (conv.GetStatus() != gmproto.ConversationStatus_ARCHIVED && conv.GetStatus() != gmproto.ConversationStatus_KEEP_ARCHIVED) {
-		return nil, fmt.Errorf("archive acknowledged but not verified for %s: returned id=%q status=%s", id, conv.GetConversationID(), conv.GetStatus())
-	}
-	return conv, nil
 }

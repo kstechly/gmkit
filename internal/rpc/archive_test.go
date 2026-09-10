@@ -26,3 +26,14 @@ func TestArchiveRPCRejectsUnavailableAndReadOnly(t *testing.T) {
 		})
 	}
 }
+
+func TestLiveReadsRejectOfflineDaemon(t *testing.T) {
+	c, _, _ := startTestServer(t, SendOff)
+	for _, method := range []string{"chats.scan", "chats.read", "chats.verifyArchive"} {
+		e := c.Call(callCtx(t), method, map[string]any{}, nil)
+		var re *Error
+		if !errors.As(e, &re) || re.Code != CodeUnavailable {
+			t.Fatalf("%s returned %v", method, e)
+		}
+	}
+}

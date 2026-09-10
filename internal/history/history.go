@@ -18,6 +18,10 @@ import (
 // processed are counted separately from messages added to the target chat —
 // Google's FetchMessages can return records for other conversations.
 type BackfillResult struct {
+	Source               string `json:"source"`
+	StopReason           string `json:"stop_reason"`
+	TraversalComplete    bool   `json:"traversal_complete"`
+	HistoryComplete      bool   `json:"history_complete"`
 	ConversationID       string `json:"conversation_id"`
 	Requests             int    `json:"requests"`
 	Count                int64  `json:"count"`
@@ -48,22 +52,37 @@ func Backfill(ctx context.Context, st *store.Store, client *gm.Client, pump *gms
 		return BackfillResult{}, fmt.Errorf("count messages before backfill: %w", err)
 	}
 
-	res := BackfillResult{ConversationID: chat, Count: count, MessagesBefore: before}
+	res := BackfillResult{Source: "live", StopReason: "request_budget", ConversationID: chat, Count: count, MessagesBefore: before}
 	for i := 0; i < requests; i++ {
 		if err := ctx.Err(); err != nil {
 			return res, err
 		}
 		resp, err := client.Underlying().FetchMessages(chat, count, cursor)
 		if err != nil {
+			res.StopReason = "fetch_failed"
 			return res, fmt.Errorf("fetch messages: %w", err)
 		}
 		res.Requests++
 		msgs := resp.GetMessages()
 		res.FetchedMessages += len(msgs)
-		imported := pump.ImportMessages(ctx, msgs)
+		imported, importErr := pump.ImportMessages(ctx, msgs)
+		if importErr != nil {
+			res.StopReason = "local_save_failed"
+			return res, importErr
+		}
 		res.SyncRecordsProcessed += imported
 		next := resp.GetCursor()
-		if len(msgs) == 0 || sameCursor(cursor, next) {
+		if next == nil {
+			res.TraversalComplete = true
+			res.StopReason = "end_of_cursor"
+			break
+		}
+		if len(msgs) == 0 {
+			res.StopReason = "empty_page_with_cursor"
+			break
+		}
+		if sameCursor(cursor, next) {
+			res.StopReason = "repeated_cursor"
 			break
 		}
 		cursor = next

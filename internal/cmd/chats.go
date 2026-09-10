@@ -3,9 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	gmsync "github.com/johnlindquist/gmkit/internal/sync"
 	"os"
 	"sort"
 
@@ -13,6 +11,7 @@ import (
 
 	"github.com/johnlindquist/gmkit/internal/output"
 	"github.com/johnlindquist/gmkit/internal/store"
+	gmsync "github.com/johnlindquist/gmkit/internal/sync"
 )
 
 func chatsCmd() *cobra.Command {
@@ -29,6 +28,7 @@ func chatsCmd() *cobra.Command {
 	c.AddCommand(chatsFindCmd())
 	c.AddCommand(chatsShowCmd())
 	c.AddCommand(chatsArchiveCmd())
+	c.AddCommand(chatsVerifyCmd())
 	return c
 }
 
@@ -179,57 +179,54 @@ func chatsListCmd() *cobra.Command {
 
 func chatsShowCmd() *cobra.Command {
 	var limit int
-	c := &cobra.Command{
-		Use:   "show <conversation-id>",
-		Short: "Show a conversation header and its most recent messages",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			st, err := openStore()
-			if err != nil {
-				return err
+	c := &cobra.Command{Use: "show <conversation-id>", Short: "Read a phone thread or inspect cached history", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		if limit < 1 {
+			return fmt.Errorf("limit must be positive")
+		}
+		var conv store.Conversation
+		var msgs []store.Message
+		switch chatSource {
+		case "live":
+			r, e := refreshChat(args[0], limit)
+			if e != nil {
+				return e
+			}
+			conv = r.Conversation
+			msgs = r.Messages
+		case "cached":
+			st, e := openStore()
+			if e != nil {
+				return e
 			}
 			defer st.Close()
-			if err := refreshChat(args[0], limit); err != nil {
-				return err
-			}
 			ctx := context.Background()
-			conv, err := st.GetConversation(ctx, args[0])
-			if err != nil {
-				if errors.Is(err, store.ErrNotFound) || err.Error() == "sql: no rows in result set" {
-					return fmt.Errorf("no conversation with id %s", args[0])
-				}
-				return err
+			conv, e = st.GetConversation(ctx, args[0])
+			if e != nil {
+				return e
 			}
-			msgs, err := st.ListMessages(ctx, store.ListMessageOpts{
-				ConversationID: args[0],
-				Limit:          limit,
-				Order:          "desc",
-			})
-			if err != nil {
-				return err
+			msgs, e = st.ListMessages(ctx, store.ListMessageOpts{ConversationID: args[0], Limit: limit + 1, Order: "desc"})
+			if e != nil {
+				return e
 			}
-			reverseMessages(msgs)
-			if flags.jsonOut {
-				return readJSON(struct {
-					Conversation store.Conversation `json:"conversation"`
-					Messages     []store.Message    `json:"messages"`
-				}{conv, msgs})
-			}
-			if err := reportRead(); err != nil {
-				return err
-			}
-			renderChatDetail(conv, msgs)
-			return nil
-		},
-	}
-	c.Flags().IntVar(&limit, "limit", 50, "max recent messages to display")
+			msgs = boundRead(msgs, limit)
+		default:
+			return fmt.Errorf("source must be live or cached")
+		}
+		sort.Slice(msgs, func(i, j int) bool { return msgs[i].TimestampMS < msgs[j].TimestampMS })
+		if flags.jsonOut {
+			return readJSON(struct {
+				Conversation store.Conversation `json:"conversation"`
+				Messages     []store.Message    `json:"messages"`
+			}{conv, msgs})
+		}
+		if e := reportRead(); e != nil {
+			return e
+		}
+		renderChatDetail(conv, msgs)
+		return nil
+	}}
+	c.Flags().IntVar(&limit, "limit", 50, "recent message records to request or cached messages to display")
 	return c
-}
-
-func reverseMessages(msgs []store.Message) {
-	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
-		msgs[i], msgs[j] = msgs[j], msgs[i]
-	}
 }
 
 func renderChatDetail(c store.Conversation, msgs []store.Message) {

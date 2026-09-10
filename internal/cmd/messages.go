@@ -107,6 +107,7 @@ func messagesSearchCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			hits = boundRead(hits, limit)
 			if flags.jsonOut {
 				return readJSON(hits)
 			}
@@ -158,6 +159,9 @@ func messagesShowCmd() *cobra.Command {
 			if flags.jsonOut {
 				return readJSON(m)
 			}
+			if e := reportRead(); e != nil {
+				return e
+			}
 			renderMessageDetail(m)
 			return nil
 		},
@@ -195,6 +199,9 @@ func messagesContextCmd() *cobra.Command {
 func renderMessages(msgs []store.Message) error {
 	if flags.jsonOut {
 		return readJSON(msgs)
+	}
+	if e := reportRead(); e != nil {
+		return e
 	}
 	if len(msgs) == 0 {
 		fmt.Fprintln(os.Stderr, "(no messages)")

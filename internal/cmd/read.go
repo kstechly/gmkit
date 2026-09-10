@@ -2,15 +2,18 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"time"
+
 	"github.com/johnlindquist/gmkit/internal/coverage"
 	"github.com/johnlindquist/gmkit/internal/gm"
 	"github.com/johnlindquist/gmkit/internal/output"
 	"github.com/johnlindquist/gmkit/internal/rpc"
 	"github.com/johnlindquist/gmkit/internal/store"
 	gmsync "github.com/johnlindquist/gmkit/internal/sync"
-	"os"
-	"time"
 )
 
 var readCoverage *coverage.Read
@@ -29,7 +32,11 @@ func readInfo() (coverage.Read, error) {
 	if readCoverage != nil {
 		return *readCoverage, nil
 	}
-	return cachedReadCoverage()
+	c, e := cachedReadCoverage()
+	if e == nil {
+		readCoverage = &c
+	}
+	return c, e
 }
 func readJSON(data any) error {
 	c, e := readInfo()
@@ -69,6 +76,9 @@ func boundRead[T any](rows []T, limit int) []T {
 }
 func scanPhone(o gmsync.ScanOptions) (r gmsync.ScanResult, err error) {
 	r.Coverage = coverage.Read{Source: "live", Folder: o.Folder, FolderScans: []coverage.Folder{}, MessageHistory: coverage.Messages{Scope: "scanned_threads", StopReason: "not_requested"}}
+	if e := o.Validate(); e != nil {
+		return r, e
+	}
 	layout, e := resolveLayout()
 	if e != nil {
 		return r, e
@@ -82,56 +92,49 @@ func scanPhone(o gmsync.ScanOptions) (r gmsync.ScanResult, err error) {
 		}
 		defer c.Close()
 		err = c.Call(ctx, "chats.scan", o, &r)
+		var re *rpc.Error
+		if errors.As(err, &re) && re.Data != nil {
+			b, _ := json.Marshal(re.Data)
+			_ = json.Unmarshal(b, &r)
+		}
 		return
 	} else if !os.IsNotExist(e) {
 		return r, e
 	}
-	err = runWithConnectedClient(func(_ context.Context, c *gm.Client, st *store.Store) error {
+	err = runWithConnectedContext(ctx, func(ctx context.Context, c *gm.Client, st *store.Store) error {
 		var e error
 		r, e = gmsync.Scan(ctx, c, st, o)
 		return e
 	})
 	return
 }
-func refreshChat(id string, limit int) error {
-	if chatSource == "cached" {
-		return nil
-	}
-	if chatSource != "live" {
-		return fmt.Errorf("source must be live or cached")
-	}
+func refreshChat(id string, limit int) (r gmsync.ChatRead, err error) {
 	// SPEC-AMBIGUITY: (2026-09-10 User asked for "okay do this cutover" but this could mean
 	// 1. Live reads fetch complete message history too.
 	// 2. Live chat reads fetch the requested recent sample and report that scope.
 	// Choice defaulted to: 2 because folder enumeration and historical message coverage are separate contracts.
 	layout, e := resolveLayout()
 	if e != nil {
-		return e
+		return r, e
 	}
-	var info coverage.Read
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	if _, e = os.Stat(layout.Socket); e == nil {
 		c, e := rpc.Dial(layout.Socket)
 		if e != nil {
-			return e
+			return r, e
 		}
 		defer c.Close()
-		if e = c.Call(ctx, "chats.read", map[string]any{"conversation_id": id, "limit": limit}, &info); e != nil {
-			return e
-		}
+		err = c.Call(ctx, "chats.read", map[string]any{"conversation_id": id, "limit": limit}, &r)
 	} else if !os.IsNotExist(e) {
-		return e
+		return r, e
 	} else {
-		e = runWithConnectedClient(func(ctx context.Context, c *gm.Client, st *store.Store) error {
+		err = runWithConnectedClient(func(ctx context.Context, c *gm.Client, st *store.Store) error {
 			var e error
-			info, e = gmsync.ReadChat(ctx, c, st, id, limit)
+			r, e = gmsync.ReadChat(ctx, c, st, id, limit)
 			return e
 		})
-		if e != nil {
-			return e
-		}
 	}
-	readCoverage = &info
-	return nil
+	readCoverage = &r.Coverage
+	return r, err
 }

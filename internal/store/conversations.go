@@ -105,6 +105,11 @@ func (s *Store) ListConversations(ctx context.Context, opts ListConversationOpts
 	} else if opts.Folder == "archive" {
 		clauses = append(clauses, "c.archived=1")
 	}
+	if opts.Folder == "inbox" || opts.Folder == "archive" {
+		// A scanned folder is its observed membership, not every historical row
+		// whose last cached archived bit happens to match.
+		clauses = append(clauses, "(NOT EXISTS (SELECT 1 FROM folder_scans WHERE folder='"+opts.Folder+"') OR EXISTS (SELECT 1 FROM folder_members fm WHERE fm.folder='"+opts.Folder+"' AND fm.conversation_id=c.conversation_id))")
+	}
 	if opts.UnreadOnly {
 		clauses = append(clauses, "c.unread = 1")
 	}

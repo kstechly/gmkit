@@ -3,10 +3,12 @@ package gm
 import (
 	"context"
 	"fmt"
-	"github.com/johnlindquist/gmkit/internal/coverage"
+	"time"
+
 	"go.mau.fi/mautrix-gmessages/pkg/libgm"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
-	"time"
+
+	"github.com/johnlindquist/gmkit/internal/coverage"
 )
 
 // FolderScan describes a bounded traversal, not an atomic snapshot of the phone.
@@ -19,6 +21,7 @@ type folderAPI interface {
 	ListConversationsWithCursor(int, gmproto.ListConversationsRequest_Folder, *gmproto.Cursor) (*gmproto.ListConversationsResponse, error)
 }
 
+// FolderCode validates the user-facing folder name before making a request.
 func FolderCode(folder string) (gmproto.ListConversationsRequest_Folder, error) {
 	switch folder {
 	case "inbox":
@@ -28,6 +31,8 @@ func FolderCode(folder string) (gmproto.ListConversationsRequest_Folder, error) 
 	}
 	return 0, fmt.Errorf("folder must be inbox or archive, got %q", folder)
 }
+
+// ScanFolder traverses one phone folder until its cursor ends or the budget fails.
 func (c *Client) ScanFolder(ctx context.Context, folder string, size, pages int) (FolderScan, error) {
 	if err := c.WaitForReady(ctx); err != nil {
 		return FolderScan{Folder: coverage.Folder{Folder: folder, StopReason: err.Error()}}, err
@@ -114,6 +119,7 @@ func phoneCall[T any](ctx context.Context, f func() (T, error)) (T, error) {
 	}
 }
 
+// RecentMessages requests a bounded recent sample; the protocol can include other threads.
 func (c *Client) RecentMessages(ctx context.Context, id string, count int) ([]*libgm.WrappedMessage, error) {
 	r, e := phoneCall(ctx, func() (*gmproto.ListMessagesResponse, error) { return c.libgm.FetchMessages(id, int64(count), nil) })
 	if e != nil {
@@ -125,10 +131,21 @@ func (c *Client) RecentMessages(ctx context.Context, id string, count int) ([]*l
 	}
 	return out, nil
 }
+
+// ReadConversation checks that a fresh response belongs to the requested thread.
 func (c *Client) ReadConversation(ctx context.Context, id string) (*gmproto.Conversation, error) {
 	r, e := phoneCall(ctx, func() (*gmproto.Conversation, error) { return c.libgm.GetConversation(id) })
 	if e == nil && r.GetConversationID() != id {
 		return nil, fmt.Errorf("phone returned no matching conversation for %s", id)
 	}
 	return r, e
+}
+
+// ReadContacts fetches contacts with cancellation of the caller’s wait.
+func (c *Client) ReadContacts(ctx context.Context) ([]*gmproto.Contact, error) {
+	r, e := phoneCall(ctx, func() (*gmproto.ListContactsResponse, error) { return c.libgm.ListContacts() })
+	if e != nil {
+		return nil, e
+	}
+	return r.GetContacts(), nil
 }

@@ -15,13 +15,17 @@ import (
 )
 
 func chatsArchiveCmd() *cobra.Command {
-	return &cobra.Command{
+	var verifyFolders bool
+	c := &cobra.Command{
 		Use:   "archive <conversation-id>",
 		Short: "Archive a phone conversation and verify its status (requires --read-only=false)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := requireWritable(); err != nil {
 				return err
+			}
+			if chatSource != "live" {
+				return fmt.Errorf("archive operates on the phone; --source must be live")
 			}
 			layout, err := resolveLayout()
 			if err != nil {
@@ -40,7 +44,7 @@ func chatsArchiveCmd() *cobra.Command {
 				defer cancel()
 				err = client.Call(ctx, "chats.archive", map[string]string{"conversation_id": args[0]}, &row)
 				if err != nil {
-					return fmt.Errorf("archive via daemon (restart it with the current CLI and --read-only=false if needed): %w", err)
+					return fmt.Errorf("archive via daemon: %w", err)
 				}
 			} else if !os.IsNotExist(err) {
 				return err
@@ -61,11 +65,30 @@ func chatsArchiveCmd() *cobra.Command {
 					return err
 				}
 			}
-			if flags.jsonOut {
-				return output.JSON(os.Stdout, row)
+			var verification *gm.ArchiveVerification
+			var checkErr error
+			if verifyFolders {
+				r, e := verifyArchives([]string{row.ID})
+				verification = &r
+				checkErr = e
 			}
-			fmt.Fprintf(os.Stdout, "Archived %s (conversation_id %s; verified on phone).\n", row.DisplayName(), row.ID)
+			if flags.jsonOut {
+				if e := output.JSON(os.Stdout, struct {
+					Conversation store.Conversation      `json:"conversation"`
+					Scope        string                  `json:"verification_scope"`
+					Folders      *gm.ArchiveVerification `json:"folder_verification,omitempty"`
+				}{row, "individual_remote_readback", verification}); e != nil {
+					return e
+				}
+				return checkErr
+			}
+			if checkErr != nil {
+				return checkErr
+			}
+			fmt.Fprintf(os.Stdout, "Archived %s (conversation_id %s; individual remote readback; use verify-archive for folder agreement).\n", row.DisplayName(), row.ID)
 			return nil
 		},
 	}
+	c.Flags().BoolVar(&verifyFolders, "verify-folders", false, "also compare status against complete inbox and archive scans")
+	return c
 }
