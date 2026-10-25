@@ -35,21 +35,7 @@ func archiveConversation(ctx context.Context, api archiveAPI, id string) (*gmpro
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	type result struct {
-		conv *gmproto.Conversation
-		err  error
-	}
-	done := make(chan result, 1)
-	// libgm's request methods have no context or hard timeout. Bound the caller's
-	// wait, and check cancellation before issuing a mutation. A timed-out write
-	// may still take effect; never report it as verified success.
-	go func() { conv, err := archiveAndReadBack(ctx, api, id); done <- result{conv, err} }()
-	select {
-	case <-ctx.Done():
-		return nil, fmt.Errorf("archive %s not verified; remote state may have changed: %w", id, ctx.Err())
-	case r := <-done:
-		return r.conv, r.err
-	}
+	return archiveAndReadBack(ctx, api, id)
 }
 
 func archiveAndReadBack(ctx context.Context, api archiveAPI, id string) (*gmproto.Conversation, error) {

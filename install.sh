@@ -6,7 +6,7 @@
 #
 # By default this downloads prebuilt binaries from GitHub Releases — no Go,
 # no Rust, no toolchains required. Pass --source to build from source
-# instead (requires Go 1.24+; Rust optional for gmtui).
+# instead (requires Go 1.26+; Rust optional for gmtui).
 #
 # Env: GMKIT_BIN_DIR overrides the install directory (default ~/.local/bin,
 # or your Go bin dir for source builds).
@@ -83,10 +83,10 @@ install_binaries() {
 
 # ------------------------------------------------------------ from source
 install_from_source() {
-  command -v go >/dev/null 2>&1 || die "building from source requires Go 1.24+ (https://go.dev/dl/)."
+  command -v go >/dev/null 2>&1 || die "building from source requires Go 1.26+ (https://go.dev/dl/)."
   local go_minor
   go_minor=$(go env GOVERSION | sed -E 's/^go1\.([0-9]+).*/\1/')
-  [ "${go_minor:-0}" -ge 24 ] || die "Go 1.24+ required, found $(go env GOVERSION)."
+  [ "${go_minor:-0}" -ge 26 ] || die "Go 1.26+ required, found $(go env GOVERSION)."
 
   local script_dir repo_dir version gobin_dir
   script_dir=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)

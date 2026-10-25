@@ -71,7 +71,7 @@ func (p *Pump) Handle(evt any) {
 		p.logger.Error().Err(ErrLoggedOut).Msg("libgm auth fatal error")
 		p.fail(ErrLoggedOut)
 	case *events.ListenFatalError:
-		if sessionRejected(e.Error) {
+		if SessionRejected(e.Error) {
 			p.logger.Error().Err(e.Error).Msg("Google rejected the pairing's credentials")
 			p.fail(fmt.Errorf("%w: %v", ErrLoggedOut, e.Error))
 			return
@@ -91,10 +91,10 @@ func (p *Pump) Handle(evt any) {
 	}
 }
 
-// sessionRejected reports whether a libgm fatal error is Google answering the
+// SessionRejected reports whether a libgm fatal error is Google answering the
 // session itself with a 4xx (401/403 on the long poll, 4xx on the token
 // refresh), as opposed to a server or transport failure a restart can clear.
-func sessionRejected(err error) bool {
+func SessionRejected(err error) bool {
 	var he events.HTTPError
 	return errors.As(err, &he) && he.Resp != nil && he.Resp.StatusCode >= 400 && he.Resp.StatusCode < 500
 }

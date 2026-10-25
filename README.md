@@ -62,7 +62,7 @@ roughly every 14 days of inactivity (Google's policy, not ours).
 
 ## Install this fork
 
-Build the archive-capable CLI from this fork with Go 1.25 or newer:
+Build the archive-capable CLI from this fork with Go 1.26 or newer:
 
 ```sh
 git clone https://github.com/kstechly/gmkit.git
@@ -328,3 +328,9 @@ can produce verified success. This verifies state at read time; new activity can
 subsequently move a thread back to the inbox.
 
 Protocol investigation and live evidence: [folder pagination](docs/research/folder-pagination.md).
+
+### Following a running Chrome login
+
+Set `GMCLI_CHROME_CDP=http://127.0.0.1:9222` on the standing `gmcli serve` process to use the Google cookies from that browser for every relay/config request. The client reads the browser CDP endpoint without opening or changing tabs. Cookie values stay in memory; logs never print them. A missing browser or signed-out profile returns an unavailable-source error; the supervisor reconnects once Chrome returns. A Google 401/403 from any request, including acknowledgments, marks the pairing expired so the recovery watcher can re-pair it.
+
+This deliberately depends on that browser remaining signed in. A pairing revoked on the phone still needs a new Google-account emoji handshake. Kaya's `gmcli-watch` dispatches that recovery through the existing agent task graph without a decision card; phone work waits for the real panel to be off and preserves existing Messages tasks. Live chat reads fetch only the requested recent sample, not complete history.

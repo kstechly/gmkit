@@ -145,11 +145,15 @@ func serveCmd() *cobra.Command {
 			if client != nil {
 				fmt.Fprintln(os.Stderr, "Connecting to Google Messages relay...")
 				if err := client.Connect(); err != nil {
-					return fmt.Errorf("connect: %w", err)
+					if !gmsync.SessionRejected(err) {
+						return fmt.Errorf("connect: %w", err)
+					}
+					server.MarkAuthExpired(err.Error())
+					logger.Warn().Err(err).Msg("Pairing rejected on connect; serving archive until recovery")
 				}
 				defer client.Disconnect()
 
-				if !noImport {
+				if !noImport && client.IsConnected() {
 					report, err := runInitialImport(importCtx, server, logger)
 					switch {
 					case err == nil:

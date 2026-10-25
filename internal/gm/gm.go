@@ -17,7 +17,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"go.mau.fi/util/exhttp"
 	"io"
 	"os"
 	"sync"
@@ -76,7 +75,7 @@ func Open(layout paths.Layout, logger zerolog.Logger) (*Client, error) {
 		layout: layout,
 		logger: logger,
 	}
-	c.libgm = libgm.NewClient(auth, nil, logger, exhttp.SensibleClientSettings)
+	c.libgm = libgm.NewClient(auth, nil, logger, httpSettings(c.dispatch))
 	c.libgm.SetEventHandler(c.dispatch)
 	return c, nil
 }
@@ -420,7 +419,7 @@ func Pair(ctx context.Context, layout paths.Layout, logger zerolog.Logger, rende
 		return nil, err
 	}
 	auth := libgm.NewAuthData()
-	cli := libgm.NewClient(auth, nil, logger, exhttp.SensibleClientSettings)
+	cli := libgm.NewClient(auth, nil, logger, httpSettings(nil))
 
 	done := make(chan *events.PairSuccessful, 1)
 	fatal := make(chan error, 1)
@@ -481,7 +480,7 @@ func PairGoogle(ctx context.Context, layout paths.Layout, logger zerolog.Logger,
 
 	auth := libgm.NewAuthData()
 	auth.SetCookies(copyStringMap(cookies))
-	cli := libgm.NewClient(auth, nil, logger, exhttp.SensibleClientSettings)
+	cli := libgm.NewClient(auth, nil, logger, httpSettings(nil))
 	defer cli.Disconnect()
 
 	pairCtx, cancel := context.WithTimeout(ctx, PairTimeout)

@@ -99,9 +99,13 @@ type stalledArchiveAPI struct {
 	entered, release chan struct{}
 }
 
-func (f *stalledArchiveAPI) GetConversation(context.Context, string) (*gmproto.Conversation, error) {
+func (f *stalledArchiveAPI) GetConversation(ctx context.Context, _ string) (*gmproto.Conversation, error) {
 	close(f.entered)
-	<-f.release
+	select {
+	case <-f.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	return &gmproto.Conversation{ConversationID: "c", Status: gmproto.ConversationStatus_ACTIVE}, nil
 }
 func TestArchiveTimeoutCannotStartLateWrite(t *testing.T) {
