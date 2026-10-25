@@ -23,7 +23,7 @@ func (s *Server) handleChatsArchive(ctx context.Context, params json.RawMessage)
 	if s.deps.SendMode == SendOff {
 		return nil, &Error{Code: CodeSendsDisabled, Message: "daemon is read-only; restart with --read-only=false"}
 	}
-	if s.deps.Client == nil || s.authExpired.Load() {
+	if s.deps.Client == nil || s.isAuthExpired() {
 		return nil, &Error{Code: CodeUnavailable, Message: "paired phone connection unavailable"}
 	}
 	s.liveMu.Lock()

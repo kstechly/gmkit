@@ -134,18 +134,23 @@ func (s *Server) handleStatus(ctx context.Context) (any, *Error) {
 	if err != nil {
 		return nil, internalErr(err)
 	}
+	authExpiredReason := ""
+	if reason := s.authExpired.Load(); reason != nil {
+		authExpiredReason = *reason
+	}
 	return map[string]any{
-		"coverage":          cov,
-		"connected":         connected,
-		"offline":           s.deps.Client == nil,
-		"auth_expired":      s.authExpired.Load(),
-		"send_mode":         s.deps.SendMode,
-		"pending_approvals": len(pending),
-		"conversations":     conversations,
-		"messages":          messages,
-		"last_event_ms":     sync.LastEventTime.UnixMilli(),
-		"last_connect_ms":   sync.LastConnectTime.UnixMilli(),
-		"updated_at_ms":     sync.UpdatedAt.UnixMilli(),
+		"coverage":            cov,
+		"connected":           connected,
+		"offline":             s.deps.Client == nil,
+		"auth_expired":        s.isAuthExpired(),
+		"auth_expired_reason": authExpiredReason,
+		"send_mode":           s.deps.SendMode,
+		"pending_approvals":   len(pending),
+		"conversations":       conversations,
+		"messages":            messages,
+		"last_event_ms":       sync.LastEventTime.UnixMilli(),
+		"last_connect_ms":     sync.LastConnectTime.UnixMilli(),
+		"updated_at_ms":       sync.UpdatedAt.UnixMilli(),
 	}, nil
 }
 
@@ -427,7 +432,7 @@ func (s *Server) runPairing() {
 		s.Broadcast(EventPairError, map[string]any{"error": err.Error()})
 		return
 	}
-	s.authExpired.Store(false)
+	s.clearAuthExpired()
 	s.deps.Logger.Info().Str("phone_id", res.PhoneID).Msg("paired via TUI; restarting daemon to load new session")
 	s.Broadcast(EventPairSuccess, map[string]any{"phone_id": res.PhoneID})
 	// Give the success event a moment to reach subscribers, then restart so
@@ -481,7 +486,7 @@ func (s *Server) runGooglePairing(cookies map[string]string) {
 		s.Broadcast(EventPairError, map[string]any{"error": err.Error()})
 		return
 	}
-	s.authExpired.Store(false)
+	s.clearAuthExpired()
 	s.deps.Logger.Info().Str("phone_id", res.PhoneID).Msg("paired via TUI (google flow); restarting daemon")
 	s.Broadcast(EventPairSuccess, map[string]any{"phone_id": res.PhoneID})
 	time.Sleep(500 * time.Millisecond)

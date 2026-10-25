@@ -22,10 +22,13 @@ import (
 	"github.com/johnlindquist/gmkit/internal/store"
 )
 
-// ErrLoggedOut signals that the phone no longer recognizes this pairing.
-// Consumers should stop hammering the relay and direct the user to
-// `gmcli auth` instead of treating it as a transient failure.
-var ErrLoggedOut = errors.New("phone reports logged-out state; re-run `gmcli auth`")
+// ErrLoggedOut signals that this pairing no longer works: the phone logged it
+// out, or Google rejects its credentials (HTTP 4xx on listen or token refresh,
+// e.g. SESSION_COOKIE_INVALID once the browser the Google-account pairing's
+// cookies came from rotated them). Reconnecting with the same session.json
+// hits the same wall, so consumers should stop hammering the relay and direct
+// the user to `gmcli auth` instead of treating it as a transient failure.
+var ErrLoggedOut = errors.New("pairing logged out or its credentials rejected; re-run `gmcli auth`")
 
 // Pump owns the conversion of libgm events into store writes.
 type Pump struct {
@@ -68,6 +71,11 @@ func (p *Pump) Handle(evt any) {
 		p.logger.Error().Err(ErrLoggedOut).Msg("libgm auth fatal error")
 		p.fail(ErrLoggedOut)
 	case *events.ListenFatalError:
+		if sessionRejected(e.Error) {
+			p.logger.Error().Err(e.Error).Msg("Google rejected the pairing's credentials")
+			p.fail(fmt.Errorf("%w: %v", ErrLoggedOut, e.Error))
+			return
+		}
 		err := fmt.Errorf("libgm listen fatal error: %w", e.Error)
 		p.logger.Error().Err(e.Error).Msg("libgm listen fatal error")
 		p.fail(err)
@@ -81,6 +89,14 @@ func (p *Pump) Handle(evt any) {
 	default:
 		p.logger.Trace().Type("event", evt).Msg("Unhandled libgm event")
 	}
+}
+
+// sessionRejected reports whether a libgm fatal error is Google answering the
+// session itself with a 4xx (401/403 on the long poll, 4xx on the token
+// refresh), as opposed to a server or transport failure a restart can clear.
+func sessionRejected(err error) bool {
+	var he events.HTTPError
+	return errors.As(err, &he) && he.Resp != nil && he.Resp.StatusCode >= 400 && he.Resp.StatusCode < 500
 }
 
 func (p *Pump) fail(err error) {

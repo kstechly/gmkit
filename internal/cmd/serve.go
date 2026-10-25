@@ -123,6 +123,25 @@ func serveCmd() *cobra.Command {
 			go func() { serveErr <- server.Serve(ctx, ln) }()
 			fmt.Fprintf(os.Stderr, "Daemon ready. RPC socket: %s (send mode: %s). Ctrl-C to stop.\n", sock, mode)
 
+			// pumpFatal carries the pump's terminal error to the loop below
+			// (nil, blocking forever, in offline mode). The relay also cancels
+			// the initial import: a pairing Google rejects fails the pump
+			// within a second of Connect, and the import would otherwise run
+			// against the dead client until its deadline and exit.
+			importCtx, cancelImport := context.WithCancel(ctx)
+			defer cancelImport()
+			var pumpFatal chan error
+			if pump != nil {
+				pumpFatal = make(chan error, 1)
+				go func() {
+					select {
+					case err := <-pump.Fatal():
+						pumpFatal <- err
+						cancelImport()
+					case <-ctx.Done():
+					}
+				}()
+			}
 			if client != nil {
 				fmt.Fprintln(os.Stderr, "Connecting to Google Messages relay...")
 				if err := client.Connect(); err != nil {
@@ -131,21 +150,21 @@ func serveCmd() *cobra.Command {
 				defer client.Disconnect()
 
 				if !noImport {
-					report, err := runInitialImport(ctx, server, logger)
-					if err != nil {
+					report, err := runInitialImport(importCtx, server, logger)
+					switch {
+					case err == nil:
+						// The import writes through the pump directly, which
+						// bypasses the event broadcaster: tell clients that
+						// connected early to refetch.
+						server.Broadcast(rpc.EventSyncStatus, map[string]any{"state": "refreshed", "coverage": report.Coverage})
+					case len(pumpFatal) == 0:
 						return err
 					}
-					// The import writes through the pump directly, which
-					// bypasses the event broadcaster: tell clients that
-					// connected early to refetch.
-					server.Broadcast(rpc.EventSyncStatus, map[string]any{"state": "refreshed", "coverage": report.Coverage})
+					// Otherwise the pump's fatal error, already queued, is
+					// what stopped the import; the loop below handles it.
 				}
 			}
 
-			var pumpFatal <-chan error // nil (blocks forever) in offline mode
-			if pump != nil {
-				pumpFatal = pump.Fatal()
-			}
 			heartbeat := time.NewTicker(syncHeartbeatInterval)
 			defer heartbeat.Stop()
 			for {
@@ -160,8 +179,8 @@ func serveCmd() *cobra.Command {
 						// a crashloop that hammers Google. Stay up, stop
 						// talking to the phone, and serve the archive with
 						// an auth_expired status until the user re-pairs.
-						logger.Warn().Msg("Pairing expired — phone reports logged out. Serving archive only; run `gmcli auth` to re-pair.")
-						server.MarkAuthExpired()
+						logger.Warn().Err(err).Msg("Pairing dead. Serving archive only; run `gmcli auth` to re-pair.")
+						server.MarkAuthExpired(err.Error())
 						server.Broadcast(rpc.EventSyncStatus, map[string]any{"state": "logged_out"})
 						client.Disconnect()
 						pumpFatal = nil // stop selecting on further fatals
