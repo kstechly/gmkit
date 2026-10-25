@@ -39,7 +39,11 @@ func TestChromeCookiesReadsBrowserWithoutOpeningATab(t *testing.T) {
 		}
 		cookies := []map[string]string{}
 		for _, name := range []string{"SID", "HSID", "OSID", "SSID", "APISID", "SAPISID", "__Secure-1PSIDTS"} {
-			cookies = append(cookies, map[string]string{"name": name, "value": "fresh", "domain": ".google.com"})
+			domain := ".google.com"
+			if name == "OSID" {
+				domain = "messages.google.com"
+			}
+			cookies = append(cookies, map[string]string{"name": name, "value": "fresh", "domain": domain})
 		}
 		cookies = append(cookies, map[string]string{"name": "SID", "value": "unrelated", "domain": "other.example"})
 		wsjson.Write(ctx, conn, map[string]any{"id": request.ID, "result": map[string]any{"cookies": cookies}})

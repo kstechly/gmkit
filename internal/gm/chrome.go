@@ -61,7 +61,7 @@ func ChromeCookies(ctx context.Context, endpoint string) (map[string]string, err
 	}
 	cookies := map[string]string{}
 	for _, c := range result.Result.Cookies {
-		if c.Domain == ".google.com" || c.Domain == "google.com" {
+		if c.Domain == ".google.com" || c.Domain == "google.com" || c.Domain == "messages.google.com" || c.Domain == ".messages.google.com" {
 			cookies[c.Name] = c.Value
 		}
 	}
