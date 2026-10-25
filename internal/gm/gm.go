@@ -17,6 +17,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go.mau.fi/util/exhttp"
+	"io"
 	"os"
 	"sync"
 	"time"
@@ -74,7 +76,7 @@ func Open(layout paths.Layout, logger zerolog.Logger) (*Client, error) {
 		layout: layout,
 		logger: logger,
 	}
-	c.libgm = libgm.NewClient(auth, nil, logger)
+	c.libgm = libgm.NewClient(auth, nil, logger, exhttp.SensibleClientSettings)
 	c.libgm.SetEventHandler(c.dispatch)
 	return c, nil
 }
@@ -90,7 +92,7 @@ func (c *Client) Subscribe(h EventHandler) {
 // Connect opens the long-poll connection. Events flow to subscribers
 // asynchronously. Call WaitForReady after Connect before phone mutations.
 func (c *Client) Connect() error {
-	return c.libgm.Connect()
+	return c.libgm.Connect(context.Background())
 }
 
 // Disconnect closes the long-poll. Safe to call multiple times.
@@ -146,7 +148,7 @@ func (c *Client) SendText(ctx context.Context, conversationID, body, replyToID s
 	waitEcho, unsubscribe := c.watchMessageEcho(tmpID)
 	defer unsubscribe()
 
-	resp, err := c.libgm.SendMessage(req)
+	resp, err := c.libgm.SendMessage(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("libgm send: %w", err)
 	}
@@ -166,7 +168,7 @@ func (c *Client) SendText(ctx context.Context, conversationID, body, replyToID s
 }
 
 func (c *Client) buildSendTextRequest(conversationID, body, replyToID, tmpID string) (*gmproto.SendMessageRequest, error) {
-	conv, err := c.libgm.GetConversation(conversationID)
+	conv, err := c.libgm.GetConversation(context.Background(), conversationID)
 	if err != nil {
 		return nil, fmt.Errorf("get conversation %s before send: %w", conversationID, err)
 	}
@@ -334,7 +336,7 @@ func (c *Client) SendReaction(messageID, emoji string, action ReactionAction) er
 	default:
 		return fmt.Errorf("unknown reaction action %v", action)
 	}
-	_, err := c.libgm.SendReaction(&gmproto.SendReactionRequest{
+	_, err := c.libgm.SendReaction(context.Background(), &gmproto.SendReactionRequest{
 		MessageID:    messageID,
 		Action:       act,
 		ReactionData: &gmproto.ReactionData{Unicode: emoji},
@@ -353,7 +355,12 @@ func (c *Client) DownloadMedia(mediaID string, key []byte) ([]byte, error) {
 	if mediaID == "" {
 		return nil, fmt.Errorf("media id is required")
 	}
-	return c.libgm.DownloadMedia(mediaID, key)
+	reader, err := c.libgm.DownloadMedia(mediaID, key)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+	return io.ReadAll(reader)
 }
 
 // AuthSnapshot returns a deep copy of the current AuthData by JSON
@@ -413,7 +420,7 @@ func Pair(ctx context.Context, layout paths.Layout, logger zerolog.Logger, rende
 		return nil, err
 	}
 	auth := libgm.NewAuthData()
-	cli := libgm.NewClient(auth, nil, logger)
+	cli := libgm.NewClient(auth, nil, logger, exhttp.SensibleClientSettings)
 
 	done := make(chan *events.PairSuccessful, 1)
 	fatal := make(chan error, 1)
@@ -432,7 +439,7 @@ func Pair(ctx context.Context, layout paths.Layout, logger zerolog.Logger, rende
 		}
 	})
 
-	qr, err := cli.StartLogin()
+	qr, err := cli.StartLogin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("start login: %w", err)
 	}
@@ -474,7 +481,7 @@ func PairGoogle(ctx context.Context, layout paths.Layout, logger zerolog.Logger,
 
 	auth := libgm.NewAuthData()
 	auth.SetCookies(copyStringMap(cookies))
-	cli := libgm.NewClient(auth, nil, logger)
+	cli := libgm.NewClient(auth, nil, logger, exhttp.SensibleClientSettings)
 	defer cli.Disconnect()
 
 	pairCtx, cancel := context.WithTimeout(ctx, PairTimeout)
@@ -483,7 +490,7 @@ func PairGoogle(ctx context.Context, layout paths.Layout, logger zerolog.Logger,
 	if err := cli.FetchConfig(pairCtx); err != nil {
 		return nil, fmt.Errorf("fetch Google Messages config with supplied cookies: %w", err)
 	}
-	emoji, session, err := cli.StartGaiaPairing(pairCtx)
+	emoji, session, err := cli.StartGaiaPairing(pairCtx, pairCtx)
 	if err != nil {
 		return nil, fmt.Errorf("start Google account pairing: %w", err)
 	}

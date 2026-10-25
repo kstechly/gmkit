@@ -17,7 +17,7 @@ type fakeArchiveAPI struct {
 	request           *gmproto.UpdateConversationRequest
 }
 
-func (f *fakeArchiveAPI) GetConversation(string) (*gmproto.Conversation, error) {
+func (f *fakeArchiveAPI) GetConversation(context.Context, string) (*gmproto.Conversation, error) {
 	f.reads++
 	if f.readErr != nil {
 		return nil, f.readErr
@@ -27,7 +27,7 @@ func (f *fakeArchiveAPI) GetConversation(string) (*gmproto.Conversation, error) 
 	}
 	return f.after, nil
 }
-func (f *fakeArchiveAPI) UpdateConversation(r *gmproto.UpdateConversationRequest) (*gmproto.UpdateConversationResponse, error) {
+func (f *fakeArchiveAPI) UpdateConversation(_ context.Context, r *gmproto.UpdateConversationRequest) (*gmproto.UpdateConversationResponse, error) {
 	f.writes++
 	f.request = r
 	return &gmproto.UpdateConversationResponse{Success: f.success}, f.writeErr
@@ -99,7 +99,7 @@ type stalledArchiveAPI struct {
 	entered, release chan struct{}
 }
 
-func (f *stalledArchiveAPI) GetConversation(string) (*gmproto.Conversation, error) {
+func (f *stalledArchiveAPI) GetConversation(context.Context, string) (*gmproto.Conversation, error) {
 	close(f.entered)
 	<-f.release
 	return &gmproto.Conversation{ConversationID: "c", Status: gmproto.ConversationStatus_ACTIVE}, nil
@@ -135,7 +135,7 @@ func TestReadinessAcceptsSettingsAfterWaitStarts(t *testing.T) {
 
 type delayedArchiveAPI struct{ fakeArchiveAPI }
 
-func (f *delayedArchiveAPI) GetConversation(id string) (*gmproto.Conversation, error) {
+func (f *delayedArchiveAPI) GetConversation(_ context.Context, id string) (*gmproto.Conversation, error) {
 	f.reads++
 	status := gmproto.ConversationStatus_ACTIVE
 	if f.reads >= 4 {

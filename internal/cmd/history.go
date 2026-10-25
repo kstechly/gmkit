@@ -148,7 +148,7 @@ func runHistoryBackfill(chat string, requests int, count int64) (history.Backfil
 	}
 	defer client.Disconnect()
 
-	if conv, err := client.Underlying().GetConversation(chat); err == nil && conv != nil {
+	if conv, err := client.Underlying().GetConversation(ctx, chat); err == nil && conv != nil {
 		pump.Handle(conv)
 	} else if _, localErr := st.GetConversation(ctx, chat); localErr != nil {
 		if err != nil {

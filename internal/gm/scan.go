@@ -18,7 +18,7 @@ type FolderScan struct {
 	Conversations []*gmproto.Conversation `json:"-"`
 }
 type folderAPI interface {
-	ListConversationsWithCursor(int, gmproto.ListConversationsRequest_Folder, *gmproto.Cursor) (*gmproto.ListConversationsResponse, error)
+	ListConversations(context.Context, *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error)
 }
 
 // FolderCode validates the user-facing folder name before making a request.
@@ -60,7 +60,7 @@ func scanFolder(ctx context.Context, api folderAPI, folder string, size, maxPage
 	seenIDs := map[string]bool{}
 	for r.Pages < maxPages {
 		resp, e := phoneCall(ctx, func() (*gmproto.ListConversationsResponse, error) {
-			return api.ListConversationsWithCursor(size, code, cursor)
+			return api.ListConversations(ctx, &gmproto.ListConversationsRequest{Count: int64(size), Folder: code, Cursor: cursor})
 		})
 		if e != nil {
 			return r, e
@@ -121,7 +121,9 @@ func phoneCall[T any](ctx context.Context, f func() (T, error)) (T, error) {
 
 // RecentMessages requests a bounded recent sample; the protocol can include other threads.
 func (c *Client) RecentMessages(ctx context.Context, id string, count int) ([]*libgm.WrappedMessage, error) {
-	r, e := phoneCall(ctx, func() (*gmproto.ListMessagesResponse, error) { return c.libgm.FetchMessages(id, int64(count), nil) })
+	r, e := phoneCall(ctx, func() (*gmproto.ListMessagesResponse, error) {
+		return c.libgm.FetchMessages(ctx, id, int64(count), nil)
+	})
 	if e != nil {
 		return nil, e
 	}
@@ -134,7 +136,7 @@ func (c *Client) RecentMessages(ctx context.Context, id string, count int) ([]*l
 
 // ReadConversation checks that a fresh response belongs to the requested thread.
 func (c *Client) ReadConversation(ctx context.Context, id string) (*gmproto.Conversation, error) {
-	r, e := phoneCall(ctx, func() (*gmproto.Conversation, error) { return c.libgm.GetConversation(id) })
+	r, e := phoneCall(ctx, func() (*gmproto.Conversation, error) { return c.libgm.GetConversation(ctx, id) })
 	if e == nil && r.GetConversationID() != id {
 		return nil, fmt.Errorf("phone returned no matching conversation for %s", id)
 	}
@@ -143,7 +145,7 @@ func (c *Client) ReadConversation(ctx context.Context, id string) (*gmproto.Conv
 
 // ReadContacts fetches contacts with cancellation of the caller’s wait.
 func (c *Client) ReadContacts(ctx context.Context) ([]*gmproto.Contact, error) {
-	r, e := phoneCall(ctx, func() (*gmproto.ListContactsResponse, error) { return c.libgm.ListContacts() })
+	r, e := phoneCall(ctx, func() (*gmproto.ListContactsResponse, error) { return c.libgm.ListContacts(ctx) })
 	if e != nil {
 		return nil, e
 	}
