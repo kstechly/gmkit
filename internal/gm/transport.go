@@ -56,9 +56,9 @@ func (t googleTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 func httpSettings(rejected func(any)) exhttp.ClientSettings {
 	settings := exhttp.SensibleClientSettings
 	var source cookieSource
-	if endpoint := os.Getenv("GMCLI_CHROME_CDP"); endpoint != "" {
+	if cookieFile := os.Getenv("GMCLI_CHROME_COOKIE_FILE"); cookieFile != "" {
 		source = func(ctx context.Context) (map[string]string, error) {
-			cookies, err := ChromeCookies(ctx, endpoint)
+			cookies, err := ChromeProfileCookies(ctx, cookieFile)
 			if err != nil {
 				return nil, fmt.Errorf("read current Google credentials: %w", err)
 			}

@@ -329,9 +329,11 @@ subsequently move a thread back to the inbox.
 
 Protocol investigation and live evidence: [folder pagination](docs/research/folder-pagination.md).
 
-### Following a running Chrome login
+### Following the paired Chrome profile
 
-Set `GMCLI_CHROME_CDP=http://127.0.0.1:9222` on the standing `gmcli serve` process to use the Google cookies from that browser for every relay/config request. The client reads the browser CDP endpoint without opening or changing tabs. Fresh cookie snapshots stay in memory; logs never print them. A missing browser or signed-out profile returns an unavailable-source error; the supervisor reconnects once Chrome returns. A Google 401/403 from any request, including acknowledgments, marks the pairing expired so the recovery watcher can re-pair it.
+Set `GMCLI_CHROME_COOKIE_FILE=/absolute/path/to/Default/Cookies` on the standing `gmcli serve` process to read the paired profile's current Google cookies for every relay/config request. The explicit file is required: browser-level CDP cookie reads follow Chrome's last-used profile and can silently send another account's credentials. The reader never opens a browser or changes focus and works with Chrome closed. Fresh cookie snapshots stay in memory; logs never print them.
+
+The reader uses `uv` and `browser-cookie3==0.20.1` for SQLite snapshots and OS keyring decryption. Provision its environment once with `uv run --no-project --with browser-cookie3==0.20.1 python -c 'import browser_cookie3'`; requests then use the cached environment offline. A missing or signed-out profile fails before an authenticated request is sent. A Google 401/403 from an authenticated request, including acknowledgments, marks the pairing expired.
 
 Google pairing creates a separate device identity for gmcli after loading browser configuration. Reusing Chrome's device identity with separate encryption keys causes HMAC failures when Messages for Web becomes active. Cookies can follow Chrome while the paired device identity and keys remain gmcli's own.
 

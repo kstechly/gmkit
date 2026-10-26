@@ -21,7 +21,6 @@ class PairingObservationTest(unittest.TestCase):
 
         with (
             patch("sys.argv", ["observe_pairing", "--conversation", "369", "--duration", "0"]),
-            patch.object(observe_pairing.urllib.request, "urlopen", return_value=contextlib.nullcontext()),
             patch.object(observe_pairing, "rpc", return_value={"connected": True, "auth_expired": False}),
             patch.object(observe_pairing.subprocess, "run", side_effect=run),
             contextlib.redirect_stdout(io.StringIO()) as output,
@@ -34,6 +33,7 @@ class PairingObservationTest(unittest.TestCase):
             "Failed to decode incoming RPC message: HMAC mismatch",
             "cookie input missing required Google cookies: OSID",
             "Failed to send acks HTTP 401",
+            "Chrome profile cookie source unavailable",
         ):
             with self.subTest(message=message), self.assertRaises(RuntimeError):
                 self.observe(message)

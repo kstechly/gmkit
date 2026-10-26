@@ -7,7 +7,6 @@ import os
 import socket
 import subprocess
 import time
-import urllib.request
 
 
 def rpc(method):
@@ -33,21 +32,12 @@ def main():
     parser.add_argument("--interval", type=float, default=300)
     parser.add_argument("--read-interval", type=float, default=300)
     args = parser.parse_args()
-    chrome = os.environ.get("GMCLI_CHROME_CDP", "http://127.0.0.1:9222")
     started_wall = time.time()
     healthy_since = None
     last_read = float("-inf")
     reads = 0
     report(event="start", required_healthy_seconds=args.duration)
     while True:
-        try:
-            with urllib.request.urlopen(chrome + "/json/version", timeout=5):
-                pass
-        except OSError:
-            healthy_since = None
-            report(event="waiting_for_chrome")
-            time.sleep(args.interval)
-            continue
         journal = subprocess.run(["journalctl", "--user", "-u", "gmcli-serve.service", "--since", f"@{started_wall:.6f}", "-o", "json", "--no-pager"], capture_output=True, text=True, check=True)
         for line in journal.stdout.splitlines():
             message = json.loads(line).get("MESSAGE", "")
@@ -59,6 +49,7 @@ def main():
                 "HTTP 401", "HTTP 403", "Google rejected the pairing",
                 "Failed to decode incoming RPC message",
                 "cookie input missing required Google cookies",
+                "Chrome profile cookie source unavailable",
             )):
                 raise RuntimeError("journal recorded an authentication or incoming message failure")
         status = rpc("status")

@@ -2,107 +2,83 @@ package gm
 
 import (
 	"context"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
+	"database/sql"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
-	"github.com/coder/websocket"
-	"github.com/coder/websocket/wsjson"
+	_ "modernc.org/sqlite"
 )
 
-func chromeCookieServer(t *testing.T, names []string) string {
+func profileFixture(t *testing.T, file, value string, names []string) *sql.DB {
 	t.Helper()
-	mux := http.NewServeMux()
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-	mux.HandleFunc("/json/version", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `{"webSocketDebuggerUrl":"ws%s/browser"}`, server.URL[4:])
-	})
-	mux.HandleFunc("/browser", func(w http.ResponseWriter, r *http.Request) {
-		conn, err := websocket.Accept(w, r, nil)
+	if _, err := exec.LookPath("uv"); err != nil {
+		t.Skip("profile reader integration needs uv")
+	}
+	if err := os.MkdirAll(filepath.Dir(file), 0700); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL; CREATE TABLE cookies(host_key TEXT,path TEXT,is_secure INTEGER,expires_utc INTEGER,name TEXT,value TEXT,encrypted_value BLOB,is_httponly INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		if _, err := db.Exec(`INSERT INTO cookies VALUES('.google.com','/',1,0,?,?,X'',1)`, name, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return db
+}
+
+func TestChromeProfileRemainsPinnedAndReadsCurrentWAL(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "Default", "Cookies")
+	db := profileFixture(t, file, "paired", requiredRelayGoogleCookies)
+	profileFixture(t, filepath.Join(root, "Profile 1", "Cookies"), "other account", requiredRelayGoogleCookies)
+	for _, lastUsed := range []string{"Default", "Profile 1"} {
+		if err := os.WriteFile(filepath.Join(root, "Local State"), []byte(`{"profile":{"last_used":"`+lastUsed+`"}}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		cookies, err := ChromeProfileCookies(context.Background(), file)
 		if err != nil {
-			return
+			t.Fatal(err)
 		}
-		defer conn.CloseNow()
-		ctx := r.Context()
-		var request struct {
-			ID     int
-			Method string
+		if cookies["SID"] != "paired" {
+			t.Fatal("credentials changed with the last-used profile")
 		}
-		if err = wsjson.Read(ctx, conn, &request); err != nil {
-			t.Error(err)
-			return
-		}
-		if request.Method != "Storage.getCookies" {
-			t.Errorf("unexpected browser mutation %s", request.Method)
-			return
-		}
-		cookies := []map[string]string{}
-		for _, name := range names {
-			domain := ".google.com"
-			if name == "OSID" {
-				domain = "messages.google.com"
-			}
-			cookies = append(cookies, map[string]string{"name": name, "value": "fresh", "domain": domain})
-		}
-		cookies = append(cookies, map[string]string{"name": "SID", "value": "unrelated", "domain": "other.example"})
-		wsjson.Write(ctx, conn, map[string]any{"id": request.ID, "result": map[string]any{"cookies": cookies}})
-	})
-	return server.URL
-}
-
-func TestChromeCookiesReadsBrowserWithoutOpeningATab(t *testing.T) {
-	endpoint := chromeCookieServer(t, []string{"SID", "HSID", "OSID", "SSID", "APISID", "SAPISID", "__Secure-1PSIDTS"})
-	cookies, err := ChromeCookies(context.Background(), endpoint)
+	}
+	if _, err := db.Exec(`UPDATE cookies SET value='rotated' WHERE name='SID'`); err != nil {
+		t.Fatal(err)
+	}
+	cookies, err := ChromeProfileCookies(context.Background(), file)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cookies) != 7 || cookies["SID"] != "fresh" {
-		t.Fatal("wrong cookie selection")
+	if cookies["SID"] != "rotated" {
+		t.Fatal("reader reused stale cookies instead of current WAL contents")
+	}
+	if cookies["OSID"] != "" {
+		t.Fatal("reader invented the optional pairing cookie")
 	}
 }
 
-func TestRelayReadsDoNotRequirePairingOSID(t *testing.T) {
-	endpoint := chromeCookieServer(t, requiredRelayGoogleCookies)
-	cookies, err := ChromeCookies(context.Background(), endpoint)
-	if err != nil {
-		t.Fatal(err)
+func TestChromeProfileRejectsUnavailableOrSignedOutStore(t *testing.T) {
+	if _, err := ChromeProfileCookies(context.Background(), filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("missing profile accepted")
 	}
-	if cookies["OSID"] != "" || len(cookies) != 5 {
-		t.Fatal("relay credentials must remain fresh and must not invent OSID")
+	for _, names := range [][]string{nil, {"SID"}} {
+		file := filepath.Join(t.TempDir(), "Cookies")
+		profileFixture(t, file, "fixture", names)
+		if _, err := ChromeProfileCookies(context.Background(), file); err == nil {
+			t.Fatal("incomplete account credentials accepted")
+		}
 	}
-	if _, err = ParseGoogleCookieInput(`{"SID":"fresh","HSID":"fresh","SSID":"fresh","APISID":"fresh","SAPISID":"fresh"}`); err == nil {
+	if _, err := ParseGoogleCookieInput(`{"SID":"s","HSID":"s","SSID":"s","APISID":"s","SAPISID":"s"}`); err == nil {
 		t.Fatal("pairing accepted input without OSID")
-	}
-}
-
-func TestRelayRejectsMissingSignInCredentials(t *testing.T) {
-	for _, missing := range requiredRelayGoogleCookies {
-		t.Run(missing, func(t *testing.T) {
-			var names []string
-			for _, name := range requiredRelayGoogleCookies {
-				if name != missing {
-					names = append(names, name)
-				}
-			}
-			if _, err := ChromeCookies(context.Background(), chromeCookieServer(t, names)); err == nil {
-				t.Fatal("accepted missing credential", missing)
-			}
-		})
-	}
-}
-
-func TestChromeCookiesRejectsSignedOutBrowser(t *testing.T) {
-	if _, err := ChromeCookies(context.Background(), chromeCookieServer(t, nil)); err == nil {
-		t.Fatal("signed-out Chrome accepted")
-	}
-}
-
-func TestChromeCookiesRejectsUnavailableBrowser(t *testing.T) {
-	server := httptest.NewServer(http.NewServeMux())
-	server.Close()
-	if _, err := ChromeCookies(context.Background(), server.URL); err == nil {
-		t.Fatal("unavailable Chrome accepted")
 	}
 }

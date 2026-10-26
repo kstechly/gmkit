@@ -2,68 +2,31 @@ package gm
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"strings"
+	"os/exec"
 	"time"
-
-	"github.com/coder/websocket"
-	"github.com/coder/websocket/wsjson"
 )
 
-// ChromeCookies reads Chrome's browser endpoint without opening or changing a tab.
-// Each Google request gets a fresh snapshot: Chrome can invalidate its previous
-// cookies at any time, so a timer or a cache cannot establish validity.
-func ChromeCookies(ctx context.Context, endpoint string) (map[string]string, error) {
+//go:embed chrome_profile_cookies.py
+var chromeProfileCookieReader string
+
+// ChromeProfileCookies reads one explicit profile's current cookie database.
+// Browser-level CDP follows the last-used profile, which may be another account.
+// browser-cookie3 owns SQLite snapshots and OS keyring decryption; this wrapper
+// never opens a tab, changes browser focus, or caches a credential snapshot.
+func ChromeProfileCookies(ctx context.Context, cookieFile string) (map[string]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(endpoint, "/")+"/json/version", nil)
+	cmd := exec.CommandContext(ctx, "uv", "run", "--offline", "--no-project", "--with", "browser-cookie3==0.20.1", "python", "-c", chromeProfileCookieReader, cookieFile)
+	output, err := cmd.Output()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Chrome profile cookie source unavailable: %w", err)
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("Chrome cookie source unavailable: %w", err)
-	}
-	defer resp.Body.Close()
-	var version struct {
-		URL string `json:"webSocketDebuggerUrl"`
-	}
-	if err = json.NewDecoder(resp.Body).Decode(&version); err != nil {
-		return nil, err
-	}
-	conn, _, err := websocket.Dial(ctx, version.URL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("Chrome cookie source unavailable: %w", err)
-	}
-	defer conn.CloseNow()
-	conn.SetReadLimit(-1) // Chrome's cookie store routinely exceeds websocket's default 32 KiB.
-	if err = wsjson.Write(ctx, conn, map[string]any{"id": 1, "method": "Storage.getCookies"}); err != nil {
-		return nil, err
-	}
-	var result struct {
-		ID    int `json:"id"`
-		Error *struct {
-			Message string `json:"message"`
-		} `json:"error"`
-		Result struct {
-			Cookies []struct{ Name, Value, Domain string } `json:"cookies"`
-		} `json:"result"`
-	}
-	for result.ID != 1 {
-		if err = wsjson.Read(ctx, conn, &result); err != nil {
-			return nil, err
-		}
-	}
-	if result.Error != nil {
-		return nil, fmt.Errorf("Chrome cookie source: %s", result.Error.Message)
-	}
-	cookies := map[string]string{}
-	for _, c := range result.Result.Cookies {
-		if c.Domain == ".google.com" || c.Domain == "google.com" || c.Domain == "messages.google.com" || c.Domain == ".messages.google.com" {
-			cookies[c.Name] = c.Value
-		}
+	var cookies map[string]string
+	if err := json.Unmarshal(output, &cookies); err != nil {
+		return nil, fmt.Errorf("decode Chrome profile cookies: %w", err)
 	}
 	cookies = filterGoogleCookies(cookies)
 	if err := validateGoogleCookies(cookies, requiredRelayGoogleCookies); err != nil {
