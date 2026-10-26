@@ -70,13 +70,6 @@ type Server struct {
 	refreshMu   sync.Mutex
 	lastRefresh time.Time
 
-	// authExpired: why this pairing is dead (the phone logged it out, or
-	// Google rejected its credentials), nil while it works. Set from
-	// GaiaLoggedOut and the pump's ErrLoggedOut, cleared when a session comes
-	// up again. Surfaced in status so clients can show a sticky "run gmcli
-	// auth" banner and watchers can tell a dead pairing from a slow one.
-	authExpired atomic.Pointer[string]
-
 	shutdown     chan struct{}
 	shutdownOnce sync.Once
 
@@ -92,13 +85,21 @@ func (s *Server) requestShutdown() {
 	s.shutdownOnce.Do(func() { close(s.shutdown) })
 }
 
-// MarkAuthExpired flags the pairing as dead for reason (also broadcast as a
-// sync.status logged_out event).
-func (s *Server) MarkAuthExpired(reason string) { s.authExpired.Store(&reason) }
+// Pairing reports whether an in-daemon pairing flow is running.
+func (s *Server) Pairing() bool { return s.pairing.Load() }
 
-func (s *Server) clearAuthExpired() { s.authExpired.Store(nil) }
-
-func (s *Server) isAuthExpired() bool { return s.authExpired.Load() != nil }
+// phoneRefusal is the error a phone-touching method returns when no paired
+// phone can answer it: an offline daemon, or a verdict under which the
+// relay cannot carry the request.
+func (s *Server) phoneRefusal() *Error {
+	if s.deps.Client == nil || s.deps.Pump == nil {
+		return &Error{Code: CodeUnavailable, Message: "paired phone unavailable: offline daemon"}
+	}
+	if v := s.deps.Client.Verdict(); v.Unusable() {
+		return &Error{Code: CodeUnavailable, Message: fmt.Sprintf("paired phone unavailable: pairing %s: %s", v.State, v.Reason)}
+	}
+	return nil
+}
 
 // NewServer builds a Server around deps.
 func NewServer(deps Deps) *Server {
@@ -214,8 +215,9 @@ func (s *Server) HandleGMEvent(evt any) {
 		if row, ok := gmsync.ConversationRow(e, "gm"); ok {
 			s.Broadcast(EventConversationUpdated, map[string]any{"conversation": row})
 		}
+	case *gm.VerdictChanged:
+		s.Broadcast(EventSyncStatus, map[string]any{"state": "verdict", "verdict": e.Verdict})
 	case *events.ClientReady:
-		s.clearAuthExpired()
 		s.Broadcast(EventSyncStatus, map[string]any{"state": "ready"})
 	case *events.PhoneNotResponding:
 		s.Broadcast(EventSyncStatus, map[string]any{"state": "phone_not_responding"})
@@ -225,9 +227,6 @@ func (s *Server) HandleGMEvent(evt any) {
 		s.Broadcast(EventSyncStatus, map[string]any{"state": "listen_temporary_error"})
 	case *events.ListenRecovered:
 		s.Broadcast(EventSyncStatus, map[string]any{"state": "listen_recovered"})
-	case *events.GaiaLoggedOut:
-		s.MarkAuthExpired("phone reports logged out")
-		s.Broadcast(EventSyncStatus, map[string]any{"state": "logged_out"})
 	}
 }
 

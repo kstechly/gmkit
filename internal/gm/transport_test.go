@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strings"
 	"testing"
-
-	"go.mau.fi/mautrix-gmessages/pkg/libgm/events"
 )
 
 func TestGoogleTransportFollowsCookieRotationOnEveryEndpoint(t *testing.T) {
@@ -54,22 +53,87 @@ func TestGoogleTransportDoesNotSendStaleCookiesWhenChromeIsUnavailable(t *testin
 	}
 }
 
-func TestGoogleTransportReportsAckAuthenticationFailures(t *testing.T) {
+type factLog struct {
+	answers []relayAnswer
+	sources []error
+}
+
+func (f *factLog) sourceUnreadable(err error)  { f.sources = append(f.sources, err) }
+func (f *factLog) relayAnswered(a relayAnswer) { f.answers = append(f.answers, a) }
+
+// Every relay answer reaches the verdict, with Google's reason kept on a
+// rejection while libgm still reads the whole body.
+func TestGoogleTransportRecordsRelayAnswers(t *testing.T) {
+	reason := strings.Repeat("SESSION_COOKIE_INVALID ", 40)
 	for _, status := range []int{200, 401, 403, 429, 503} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
-			var rejected error
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(status) }))
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+				fmt.Fprint(w, reason)
+			}))
 			defer server.Close()
-			client := &http.Client{Transport: googleTransport{base: localTransport(server), rejected: func(evt any) { rejected = evt.(*events.ListenFatalError).Error }}}
-			resp, err := client.Get("https://instantmessaging-pa.clients6.google.com/AckMessages")
+			facts := &factLog{}
+			client := &http.Client{Transport: googleTransport{base: localTransport(server), facts: facts, source: func(context.Context) (map[string]string, error) {
+				return map[string]string{"SAPISID": "s", "SID": "a"}, nil
+			}}}
+			resp, err := client.Get("https://instantmessaging-pa.clients6.google.com/$rpc/AckMessages")
 			if err != nil {
 				t.Fatal(err)
 			}
+			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			if (rejected != nil) != (status == 401 || status == 403) {
-				t.Fatalf("status=%d rejected=%v", status, rejected)
+			if string(body) != reason {
+				t.Fatal("libgm lost part of the response body")
+			}
+			if len(facts.answers) != 1 || facts.answers[0].Status != status || facts.answers[0].CookieFingerprint == "" {
+				t.Fatalf("answers=%+v", facts.answers)
+			}
+			rejected := status == 401 || status == 403
+			if got := facts.answers[0].Body; rejected != (got == reason[:rejectionBodyBytes]) {
+				t.Fatalf("evidence body=%q", got)
 			}
 		})
+	}
+}
+
+func TestGoogleTransportRecordsUnreadableSourceAndIgnoresConfigHost(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(401) }))
+	defer server.Close()
+	facts := &factLog{}
+	locked := errors.New("keyring locked")
+	readable := true
+	client := &http.Client{Transport: googleTransport{base: localTransport(server), facts: facts, source: func(context.Context) (map[string]string, error) {
+		if !readable {
+			return nil, locked
+		}
+		return map[string]string{"SAPISID": "s"}, nil
+	}}}
+	resp, err := client.Get("https://messages.google.com/web/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(facts.answers) != 0 {
+		t.Fatal("config page answer counted as a relay verdict")
+	}
+	readable = false
+	if _, err := client.Get("https://instantmessaging-pa.googleapis.com/x"); !errors.Is(err, locked) {
+		t.Fatal(err)
+	}
+	if len(facts.sources) != 1 || !errors.Is(facts.sources[0], locked) {
+		t.Fatalf("sources=%v", facts.sources)
+	}
+}
+
+func TestCookieFingerprintFollowsRelayCredentialsOnly(t *testing.T) {
+	a := map[string]string{"SID": "1", "HSID": "2", "SSID": "3", "APISID": "4", "SAPISID": "5", "OSID": "x"}
+	b := map[string]string{"SID": "1", "HSID": "2", "SSID": "3", "APISID": "4", "SAPISID": "5", "OSID": "y"}
+	c := map[string]string{"SID": "rotated", "HSID": "2", "SSID": "3", "APISID": "4", "SAPISID": "5"}
+	if cookieFingerprint(a) != cookieFingerprint(b) || cookieFingerprint(a) == cookieFingerprint(c) {
+		t.Fatal("fingerprint does not track exactly the relay cookies")
+	}
+	if fp := cookieFingerprint(a); len(fp) != 12 {
+		t.Fatalf("fingerprint %q", fp)
 	}
 }
 

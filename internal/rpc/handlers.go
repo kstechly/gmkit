@@ -134,23 +134,23 @@ func (s *Server) handleStatus(ctx context.Context) (any, *Error) {
 	if err != nil {
 		return nil, internalErr(err)
 	}
-	authExpiredReason := ""
-	if reason := s.authExpired.Load(); reason != nil {
-		authExpiredReason = *reason
+	var verdict *gm.Verdict
+	if s.deps.Client != nil {
+		v := s.deps.Client.Verdict()
+		verdict = &v
 	}
 	return map[string]any{
-		"coverage":            cov,
-		"connected":           connected,
-		"offline":             s.deps.Client == nil,
-		"auth_expired":        s.isAuthExpired(),
-		"auth_expired_reason": authExpiredReason,
-		"send_mode":           s.deps.SendMode,
-		"pending_approvals":   len(pending),
-		"conversations":       conversations,
-		"messages":            messages,
-		"last_event_ms":       sync.LastEventTime.UnixMilli(),
-		"last_connect_ms":     sync.LastConnectTime.UnixMilli(),
-		"updated_at_ms":       sync.UpdatedAt.UnixMilli(),
+		"coverage":          cov,
+		"connected":         connected,
+		"offline":           s.deps.Client == nil,
+		"verdict":           verdict,
+		"send_mode":         s.deps.SendMode,
+		"pending_approvals": len(pending),
+		"conversations":     conversations,
+		"messages":          messages,
+		"last_event_ms":     sync.LastEventTime.UnixMilli(),
+		"last_connect_ms":   sync.LastConnectTime.UnixMilli(),
+		"updated_at_ms":     sync.UpdatedAt.UnixMilli(),
 	}, nil
 }
 
@@ -384,8 +384,8 @@ func (s *Server) handleContactsShow(ctx context.Context, params json.RawMessage)
 // handleSyncRefresh schedules a paginated folder scan. Message history is
 // explicitly not fetched. Completion and coverage arrive in sync.status.
 func (s *Server) handleSyncRefresh(ctx context.Context) (any, *Error) {
-	if s.deps.Client == nil || s.deps.Pump == nil {
-		return nil, &Error{Code: CodeUnavailable, Message: "offline daemon: no phone connection to refresh from"}
+	if e := s.phoneRefusal(); e != nil {
+		return nil, e
 	}
 	s.refreshMu.Lock()
 	if time.Since(s.lastRefresh) < 30*time.Second {
@@ -432,7 +432,6 @@ func (s *Server) runPairing() {
 		s.Broadcast(EventPairError, map[string]any{"error": err.Error()})
 		return
 	}
-	s.clearAuthExpired()
 	s.deps.Logger.Info().Str("phone_id", res.PhoneID).Msg("paired via TUI; restarting daemon to load new session")
 	s.Broadcast(EventPairSuccess, map[string]any{"phone_id": res.PhoneID})
 	// Give the success event a moment to reach subscribers, then restart so
@@ -442,9 +441,9 @@ func (s *Server) runPairing() {
 }
 
 type authPairGoogleParams struct {
-	// Free-form pasted cookie input: raw Cookie header, Copy-as-cURL,
-	// Copy-as-fetch, or a JSON map.
-	CookiesInput string `json:"cookies_input"`
+	// CookieFile is the Chrome profile cookie database of the Google account
+	// to pair as. Empty means the current pairing's own profile.
+	CookieFile string `json:"cookie_file"`
 }
 
 // handleAuthPairGoogle starts the Google-account pairing flow (the QR flow
@@ -459,9 +458,15 @@ func (s *Server) handleAuthPairGoogle(params json.RawMessage) (any, *Error) {
 	if s.deps.Layout.Session == "" {
 		return nil, &Error{Code: CodeUnavailable, Message: "pairing is not available on this daemon"}
 	}
-	cookies, err := gm.ParseGoogleCookieInput(p.CookiesInput)
-	if err != nil {
-		return nil, &Error{Code: CodeInvalidParams, Message: err.Error()}
+	cookieFile := p.CookieFile
+	if cookieFile == "" && s.deps.Client != nil {
+		cookieFile = s.deps.Client.CookieFile()
+	}
+	if cookieFile == "" {
+		return nil, &Error{Code: CodeInvalidParams, Message: "cookie_file is required: this daemon has no Google-account pairing to take it from"}
+	}
+	if !filepath.IsAbs(cookieFile) {
+		return nil, &Error{Code: CodeInvalidParams, Message: "cookie_file must be an absolute path: " + cookieFile}
 	}
 	if !s.pairing.CompareAndSwap(false, true) {
 		return map[string]any{"started": false, "reason": "pairing already in progress"}, nil
@@ -469,16 +474,16 @@ func (s *Server) handleAuthPairGoogle(params json.RawMessage) (any, *Error) {
 	if s.deps.Client != nil {
 		s.deps.Client.Disconnect()
 	}
-	go s.runGooglePairing(cookies)
-	return map[string]any{"started": true}, nil
+	go s.runGooglePairing(cookieFile)
+	return map[string]any{"started": true, "cookie_file": cookieFile}, nil
 }
 
-func (s *Server) runGooglePairing(cookies map[string]string) {
+func (s *Server) runGooglePairing(cookieFile string) {
 	defer s.pairing.Store(false)
 	ctx, cancel := context.WithTimeout(context.Background(), gm.PairTimeout+30*time.Second)
 	defer cancel()
 
-	res, err := gm.PairGoogle(ctx, s.deps.Layout, s.deps.Logger, cookies, func(emoji string) {
+	res, err := gm.PairGoogle(ctx, s.deps.Layout, s.deps.Logger, cookieFile, func(emoji string) {
 		s.Broadcast(EventPairEmoji, map[string]any{"emoji": emoji})
 	})
 	if err != nil {
@@ -486,8 +491,7 @@ func (s *Server) runGooglePairing(cookies map[string]string) {
 		s.Broadcast(EventPairError, map[string]any{"error": err.Error()})
 		return
 	}
-	s.clearAuthExpired()
-	s.deps.Logger.Info().Str("phone_id", res.PhoneID).Msg("paired via TUI (google flow); restarting daemon")
+	s.deps.Logger.Info().Str("phone_id", res.PhoneID).Msg("paired (google flow); restarting daemon")
 	s.Broadcast(EventPairSuccess, map[string]any{"phone_id": res.PhoneID})
 	time.Sleep(500 * time.Millisecond)
 	s.requestShutdown()
@@ -505,8 +509,8 @@ func (s *Server) handleMediaDownload(ctx context.Context, params json.RawMessage
 	if p.MessageID == "" {
 		return nil, &Error{Code: CodeInvalidParams, Message: "message_id is required"}
 	}
-	if s.deps.Client == nil {
-		return nil, &Error{Code: CodeUnavailable, Message: "phone connection unavailable"}
+	if e := s.phoneRefusal(); e != nil {
+		return nil, e
 	}
 	m, err := s.deps.Store.GetMessage(ctx, p.MessageID)
 	if errors.Is(err, store.ErrNotFound) {
@@ -621,8 +625,8 @@ func (s *Server) handleSendReact(params json.RawMessage) (any, *Error) {
 	if s.deps.SendMode == SendOff {
 		return nil, &Error{Code: CodeSendsDisabled, Message: "daemon is read-only; restart with `gmcli --read-only=false serve`"}
 	}
-	if s.deps.Client == nil {
-		return nil, &Error{Code: CodeUnavailable, Message: "phone connection unavailable"}
+	if e := s.phoneRefusal(); e != nil {
+		return nil, e
 	}
 	action := gm.ReactionAdd
 	if p.Remove {
@@ -667,8 +671,8 @@ func (s *Server) handleHistoryBackfill(ctx context.Context, params json.RawMessa
 	if p.ConversationID == "" {
 		return nil, &Error{Code: CodeInvalidParams, Message: "conversation_id is required"}
 	}
-	if s.deps.Client == nil || s.deps.Pump == nil {
-		return nil, &Error{Code: CodeUnavailable, Message: "phone connection unavailable"}
+	if e := s.phoneRefusal(); e != nil {
+		return nil, e
 	}
 	s.liveMu.Lock()
 	defer s.liveMu.Unlock()
@@ -701,8 +705,8 @@ func (s *Server) handleHistoryLookup(ctx context.Context, params json.RawMessage
 	if p.Phone == "" {
 		return nil, &Error{Code: CodeInvalidParams, Message: "phone is required (E.164, e.g. +13855551234)"}
 	}
-	if s.deps.Client == nil || s.deps.Pump == nil {
-		return nil, &Error{Code: CodeUnavailable, Message: "phone connection unavailable"}
+	if e := s.phoneRefusal(); e != nil {
+		return nil, e
 	}
 	s.liveMu.Lock()
 	defer s.liveMu.Unlock()
@@ -843,8 +847,8 @@ func (s *Server) performApprovedSend(ctx context.Context, approval store.Approva
 	if current.Status != store.ApprovalPending {
 		return nil, &Error{Code: CodeAlreadyResolved, Message: "approval is already " + current.Status}
 	}
-	if s.deps.Client == nil {
-		return nil, &Error{Code: CodeUnavailable, Message: "phone connection unavailable"}
+	if e := s.phoneRefusal(); e != nil {
+		return nil, e
 	}
 
 	sendCtx, cancel := context.WithTimeout(ctx, s.deps.LiveTimeout)

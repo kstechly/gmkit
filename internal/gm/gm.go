@@ -5,8 +5,8 @@
 //
 // Two entry points cover the lifecycle:
 //
-//	Pair(ctx, layout, render)         // first run: produces session.json
-//	Open(layout, logger) -> *Client   // subsequent runs: ready to Connect()
+//	PairGoogle(ctx, layout, logger, cookieFile, render) // writes session.json
+//	Open(layout, logger) -> *Client                     // ready to Connect()
 //
 // The wrapper does not own a goroutine of its own; libgm runs the long-poll.
 // Subscribers must not block in their handlers.
@@ -18,7 +18,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"sync"
 	"time"
 
@@ -47,37 +46,95 @@ const sendMetadataTimeout = 10 * time.Second
 type EventHandler func(evt any)
 
 // Client is a thin wrapper around *libgm.Client adding fan-out event
-// subscription and persistence on AuthTokenRefreshed.
+// subscription, persistence of the pairing record, and the pairing verdict.
 type Client struct {
 	libgm  *libgm.Client
-	auth   *libgm.AuthData
+	record *record
 	layout paths.Layout
 	logger zerolog.Logger
 
 	mu          sync.RWMutex
 	subscribers []EventHandler
 	settings    *gmproto.Settings
+
+	// facts is the one place the pairing's health is decided (verdict.go).
+	// publishMu keeps verdict changes reaching subscribers in order.
+	factsMu   sync.Mutex
+	facts     *verdictFacts
+	publishMu sync.Mutex
 }
 
+// VerdictChanged is dispatched to subscribers each time the verdict's state
+// or reason changes.
+type VerdictChanged struct{ Verdict }
+
+// libgmDecodeFailure is the message libgm logs, and only logs, when a phone
+// payload fails to decrypt (event_handler.go HandleRPCMsg).
+const libgmDecodeFailure = "Failed to decode incoming RPC message"
+
 // Open loads session.json and returns a connected-but-not-yet-Connect()'d
-// Client. Returns an error if no session exists — the caller must run Pair
+// Client. Returns an error if no session exists — the caller must pair
 // first.
 func Open(layout paths.Layout, logger zerolog.Logger) (*Client, error) {
-	auth, err := loadAuth(layout.Session)
+	rec, err := loadRecord(layout.Session)
 	if err != nil {
 		return nil, err
 	}
-	if auth.Browser == nil {
-		return nil, fmt.Errorf("session %s has no paired device; run `gmcli auth` first", layout.Session)
+	if rec.auth.Browser == nil {
+		return nil, fmt.Errorf("session %s has no paired device; run `gmcli auth google --cookie-file PATH` first", layout.Session)
 	}
 	c := &Client{
-		auth:   auth,
+		record: rec,
 		layout: layout,
 		logger: logger,
+		facts:  newVerdictFacts(time.Now()),
 	}
-	c.libgm = libgm.NewClient(auth, nil, logger, httpSettings(c.dispatch))
+	// zerolog runs hooks only for enabled levels, and the decode failure is
+	// an error-level line: the verdict needs it whatever level was asked for.
+	libgmLogger := logger
+	if logger.GetLevel() > zerolog.ErrorLevel {
+		libgmLogger = logger.Level(zerolog.ErrorLevel)
+	}
+	libgmLogger = libgmLogger.Hook(zerolog.HookFunc(func(_ *zerolog.Event, _ zerolog.Level, msg string) {
+		if msg == libgmDecodeFailure {
+			c.observe(func(f *verdictFacts) { f.decryptFailed(time.Now()) })
+		}
+	}))
+	c.libgm = libgm.NewClient(rec.auth, nil, libgmLogger, httpSettings(profileSource(rec.cookieFile, relayGoogleCookies), c))
 	c.libgm.SetEventHandler(c.dispatch)
 	return c, nil
+}
+
+// CookieFile is the Chrome profile cookie database this pairing reads its
+// Google account credentials from ("" for a QR pairing).
+func (c *Client) CookieFile() string { return c.record.cookieFile }
+
+// Verdict returns the current pairing verdict.
+func (c *Client) Verdict() Verdict {
+	c.factsMu.Lock()
+	defer c.factsMu.Unlock()
+	return c.facts.published
+}
+
+// observe applies one fact and dispatches the verdict if it changed.
+func (c *Client) observe(apply func(*verdictFacts)) {
+	c.publishMu.Lock()
+	defer c.publishMu.Unlock()
+	c.factsMu.Lock()
+	apply(c.facts)
+	v, changed := c.facts.verdict(time.Now())
+	c.factsMu.Unlock()
+	if changed {
+		c.fanOut(&VerdictChanged{v})
+	}
+}
+
+func (c *Client) sourceUnreadable(err error) {
+	c.observe(func(f *verdictFacts) { f.sourceUnreadable(err) })
+}
+
+func (c *Client) relayAnswered(a relayAnswer) {
+	c.observe(func(f *verdictFacts) { f.relayAnswered(a) })
 }
 
 // Subscribe registers a handler. Multiple subscribers receive each event in
@@ -365,7 +422,7 @@ func (c *Client) DownloadMedia(mediaID string, key []byte) ([]byte, error) {
 // AuthSnapshot returns a deep copy of the current AuthData by JSON
 // round-trip. Useful for diagnostics; do not modify.
 func (c *Client) AuthSnapshot() (*libgm.AuthData, error) {
-	b, err := json.Marshal(c.auth)
+	b, err := json.Marshal(c.record.auth)
 	if err != nil {
 		return nil, err
 	}
@@ -376,19 +433,39 @@ func (c *Client) AuthSnapshot() (*libgm.AuthData, error) {
 	return &out, nil
 }
 
-// dispatch is the single libgm callback. It persists on token refresh and
-// then fans out to subscribers.
+// dispatch is the single libgm callback. It persists on token refresh,
+// records what the phone said for the verdict, and fans out to subscribers.
 func (c *Client) dispatch(evt any) {
 	switch e := evt.(type) {
 	case *events.AuthTokenRefreshed, *events.PairSuccessful:
-		if err := saveAuth(c.layout.Session, c.auth); err != nil {
+		if err := saveRecord(c.layout.Session, c.record); err != nil {
 			c.logger.Error().Err(err).Msg("Failed to persist refreshed auth data")
 		}
+	case *events.GaiaLoggedOut:
+		c.observe(func(f *verdictFacts) { f.phoneLoggedOut() })
 	case *gmproto.Settings:
 		c.mu.Lock()
 		c.settings = e
 		c.mu.Unlock()
 	}
+	if phonePayload(evt) {
+		c.observe(func(f *verdictFacts) { f.phoneEvent(time.Now()) })
+	}
+	c.fanOut(evt)
+}
+
+// phonePayload reports whether libgm could only have produced evt by
+// decrypting something the phone sent.
+func phonePayload(evt any) bool {
+	switch evt.(type) {
+	case *gmproto.Settings, *gmproto.Conversation, *gmproto.UserAlertEvent, *gmproto.TypingData,
+		*libgm.WrappedMessage, *events.AccountChange, *events.PhoneRespondingAgain:
+		return true
+	}
+	return false
+}
+
+func (c *Client) fanOut(evt any) {
 	c.mu.RLock()
 	subs := append([]EventHandler(nil), c.subscribers...)
 	c.mu.RUnlock()
@@ -419,7 +496,7 @@ func Pair(ctx context.Context, layout paths.Layout, logger zerolog.Logger, rende
 		return nil, err
 	}
 	auth := libgm.NewAuthData()
-	cli := libgm.NewClient(auth, nil, logger, httpSettings(nil))
+	cli := libgm.NewClient(auth, nil, logger, httpSettings(nil, nil))
 
 	done := make(chan *events.PairSuccessful, 1)
 	fatal := make(chan error, 1)
@@ -461,33 +538,35 @@ func Pair(ctx context.Context, layout paths.Layout, logger zerolog.Logger, rende
 		// libgm reconnects internally 2s after PairSuccessful; we're not
 		// going to keep this client around, so close down cleanly.
 		cli.Disconnect()
-		if err := saveAuth(layout.Session, auth); err != nil {
+		if err := saveRecord(layout.Session, &record{auth: auth}); err != nil {
 			return nil, fmt.Errorf("persist session: %w", err)
 		}
 		return &PairResult{PhoneID: res.PhoneID, SessionPath: layout.Session}, nil
 	}
 }
 
-// PairGoogle runs the Google account emoji pairing flow with caller-supplied
-// cookies. It writes session.json on success and returns the paired phone ID.
-func PairGoogle(ctx context.Context, layout paths.Layout, logger zerolog.Logger, cookies map[string]string, render EmojiRenderer) (*PairResult, error) {
+// PairGoogle runs the Google account emoji pairing flow as the account
+// signed in to the Chrome profile whose cookie database is cookieFile. Every
+// request reads that profile's current cookies; session.json records the
+// file, never the cookies (record.go). Returns the paired phone ID.
+func PairGoogle(ctx context.Context, layout paths.Layout, logger zerolog.Logger, cookieFile string, render EmojiRenderer) (*PairResult, error) {
 	if err := layout.EnsureDirs(); err != nil {
 		return nil, err
 	}
-	if len(cookies) == 0 {
-		return nil, errors.New("google account pairing requires cookies")
+	if cookieFile == "" {
+		return nil, errors.New("google account pairing needs the Chrome profile cookie file of the account to pair")
 	}
 
 	auth := libgm.NewAuthData()
-	auth.SetCookies(copyStringMap(cookies))
-	cli := libgm.NewClient(auth, nil, logger, httpSettings(nil))
+	auth.SetCookies(map[string]string{})
+	cli := libgm.NewClient(auth, nil, logger, httpSettings(profileSource(cookieFile, pairingGoogleCookies), nil))
 	defer cli.Disconnect()
 
 	pairCtx, cancel := context.WithTimeout(ctx, PairTimeout)
 	defer cancel()
 
 	if err := cli.FetchConfig(pairCtx); err != nil {
-		return nil, fmt.Errorf("fetch Google Messages config with supplied cookies: %w", err)
+		return nil, fmt.Errorf("fetch Google Messages config as %s: %w", cookieFile, err)
 	}
 	// FetchConfig adopts the cookie owner's browser device ID. Sharing that
 	// registration with Chrome makes each pairing replace the other's keys.
@@ -502,55 +581,8 @@ func PairGoogle(ctx context.Context, layout paths.Layout, logger zerolog.Logger,
 	if err != nil {
 		return nil, fmt.Errorf("finish Google account pairing: %w", err)
 	}
-	if err := saveAuth(layout.Session, auth); err != nil {
+	if err := saveRecord(layout.Session, &record{auth: auth, cookieFile: cookieFile}); err != nil {
 		return nil, fmt.Errorf("persist session: %w", err)
 	}
 	return &PairResult{PhoneID: phoneID, SessionPath: layout.Session}, nil
-}
-
-func copyStringMap(in map[string]string) map[string]string {
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
-}
-
-func loadAuth(path string) (*libgm.AuthData, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("no session at %s; run `gmcli auth` first", path)
-		}
-		return nil, fmt.Errorf("open session %s: %w", path, err)
-	}
-	defer f.Close()
-	var auth libgm.AuthData
-	if err := json.NewDecoder(f).Decode(&auth); err != nil {
-		return nil, fmt.Errorf("decode session %s: %w", path, err)
-	}
-	return &auth, nil
-}
-
-func saveAuth(path string, auth *libgm.AuthData) error {
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("create %s: %w", tmp, err)
-	}
-	enc := json.NewEncoder(f)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(auth); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmp)
-		return fmt.Errorf("encode session: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("close %s: %w", tmp, err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("rename %s -> %s: %w", tmp, path, err)
-	}
-	return nil
 }

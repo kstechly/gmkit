@@ -329,12 +329,23 @@ subsequently move a thread back to the inbox.
 
 Protocol investigation and live evidence: [folder pagination](docs/research/folder-pagination.md).
 
-### Following the paired Chrome profile
+### The pairing record and its verdict
 
-Set `GMCLI_CHROME_COOKIE_FILE=/absolute/path/to/Default/Cookies` on the standing `gmcli serve` process to read the paired profile's current Google cookies for every relay/config request. The explicit file is required: browser-level CDP cookie reads follow Chrome's last-used profile and can silently send another account's credentials. The reader never opens a browser or changes focus and works with Chrome closed. Fresh cookie snapshots stay in memory; logs never print them.
+`session.json` is the one pairing record: libgm's keys and relay token, plus, for a Google-account pairing, `cookie_file`, the Chrome profile `Cookies` database of the paired account. Pair with `gmcli auth google --cookie-file /absolute/path/to/Default/Cookies` (the daemon runs the flow; later re-pairs default to the recorded file). The record never holds a cookie: every relay/config request reads the profile's current cookies through `uv` and `browser-cookie3==0.20.1` (SQLite snapshot, OS keyring decryption). The explicit file matters: browser-level CDP cookie reads follow Chrome's last-used profile and can silently send another account's credentials. The reader never opens a browser or changes focus and works with Chrome closed; logs never print cookies. Provision its environment once with `uv run --no-project --with browser-cookie3==0.20.1 python -c 'import browser_cookie3'`.
 
-The reader uses `uv` and `browser-cookie3==0.20.1` for SQLite snapshots and OS keyring decryption. Provision its environment once with `uv run --no-project --with browser-cookie3==0.20.1 python -c 'import browser_cookie3'`; requests then use the cached environment offline. A missing or signed-out profile fails before an authenticated request is sent. A Google 401/403 from an authenticated request, including acknowledgments, marks the pairing expired.
+The daemon keeps one verdict on the pairing, recomputed from what Google and the phone answer, and reports it in `status.verdict` (`state`, `since`, `reason`, `evidence`, `decrypt_failures`) and as `sync.status {state: "verdict"}`. Every change is kept in the `verdict_log` table.
+
+| state | means |
+| --- | --- |
+| `connecting` | nothing has answered since the daemon started |
+| `live` | the relay accepts the pairing and phone payloads decrypt |
+| `rejected` | the relay last answered 401/403 (evidence: endpoint, status, Google's reason, a fingerprint of the cookies sent) |
+| `source_unreadable` | the profile's cookies could not be read (keyring locked, profile missing or signed out); nothing was sent |
+| `logged_out` | only a re-pair helps: the phone said so, or the relay rejected two different sets of the account's cookies in a row |
+| `undecryptable` | the relay accepts the pairing but the phone's payloads stopped decrypting |
+
+Phone-touching methods refuse under `rejected`, `source_unreadable` and `logged_out`, naming the state. While the relay connection is down and the verdict is not `logged_out`, the daemon reconnects every 2 minutes with the profile's current cookies; nothing else restarts or latches it.
 
 Google pairing creates a separate device identity for gmcli after loading browser configuration. Reusing Chrome's device identity with separate encryption keys causes HMAC failures when Messages for Web becomes active. Cookies can follow Chrome while the paired device identity and keys remain gmcli's own.
 
-This deliberately depends on that browser remaining signed in. A pairing revoked on the phone still needs a new Google-account emoji handshake. Kaya's `gmcli-watch` dispatches that recovery through the existing agent task graph without a decision card; phone work waits for the real panel to be off and preserves existing Messages tasks. Live chat reads fetch only the requested recent sample, not complete history.
+This deliberately depends on that browser remaining signed in. A `logged_out` pairing needs a new Google-account emoji handshake (`gmcli auth google`). Live chat reads fetch only the requested recent sample, not complete history.

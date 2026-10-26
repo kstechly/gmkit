@@ -38,13 +38,13 @@ func profileFixture(t *testing.T, file, value string, names []string) *sql.DB {
 func TestChromeProfileRemainsPinnedAndReadsCurrentWAL(t *testing.T) {
 	root := t.TempDir()
 	file := filepath.Join(root, "Default", "Cookies")
-	db := profileFixture(t, file, "paired", requiredRelayGoogleCookies)
-	profileFixture(t, filepath.Join(root, "Profile 1", "Cookies"), "other account", requiredRelayGoogleCookies)
+	db := profileFixture(t, file, "paired", relayGoogleCookies)
+	profileFixture(t, filepath.Join(root, "Profile 1", "Cookies"), "other account", relayGoogleCookies)
 	for _, lastUsed := range []string{"Default", "Profile 1"} {
 		if err := os.WriteFile(filepath.Join(root, "Local State"), []byte(`{"profile":{"last_used":"`+lastUsed+`"}}`), 0600); err != nil {
 			t.Fatal(err)
 		}
-		cookies, err := ChromeProfileCookies(context.Background(), file)
+		cookies, err := ChromeProfileCookies(context.Background(), file, relayGoogleCookies)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -55,7 +55,7 @@ func TestChromeProfileRemainsPinnedAndReadsCurrentWAL(t *testing.T) {
 	if _, err := db.Exec(`UPDATE cookies SET value='rotated' WHERE name='SID'`); err != nil {
 		t.Fatal(err)
 	}
-	cookies, err := ChromeProfileCookies(context.Background(), file)
+	cookies, err := ChromeProfileCookies(context.Background(), file, relayGoogleCookies)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,17 +68,19 @@ func TestChromeProfileRemainsPinnedAndReadsCurrentWAL(t *testing.T) {
 }
 
 func TestChromeProfileRejectsUnavailableOrSignedOutStore(t *testing.T) {
-	if _, err := ChromeProfileCookies(context.Background(), filepath.Join(t.TempDir(), "missing")); err == nil {
+	if _, err := ChromeProfileCookies(context.Background(), filepath.Join(t.TempDir(), "missing"), relayGoogleCookies); err == nil {
 		t.Fatal("missing profile accepted")
 	}
 	for _, names := range [][]string{nil, {"SID"}} {
 		file := filepath.Join(t.TempDir(), "Cookies")
 		profileFixture(t, file, "fixture", names)
-		if _, err := ChromeProfileCookies(context.Background(), file); err == nil {
+		if _, err := ChromeProfileCookies(context.Background(), file, relayGoogleCookies); err == nil {
 			t.Fatal("incomplete account credentials accepted")
 		}
 	}
-	if _, err := ParseGoogleCookieInput(`{"SID":"s","HSID":"s","SSID":"s","APISID":"s","SAPISID":"s"}`); err == nil {
-		t.Fatal("pairing accepted input without OSID")
+	file := filepath.Join(t.TempDir(), "Cookies")
+	profileFixture(t, file, "fixture", relayGoogleCookies)
+	if _, err := ChromeProfileCookies(context.Background(), file, pairingGoogleCookies); err == nil {
+		t.Fatal("pairing accepted a profile without OSID")
 	}
 }

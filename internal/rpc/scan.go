@@ -13,8 +13,8 @@ func (s *Server) handleChatsScan(ctx context.Context, params json.RawMessage) (a
 	if e != nil {
 		return nil, e
 	}
-	if s.deps.Client == nil || s.isAuthExpired() {
-		return nil, &Error{Code: CodeUnavailable, Message: "paired phone unavailable"}
+	if e := s.phoneRefusal(); e != nil {
+		return nil, e
 	}
 	if o.Folder == "" {
 		o.Folder = "all"
@@ -42,8 +42,8 @@ func (s *Server) handleChatsRead(ctx context.Context, params json.RawMessage) (a
 	if e != nil {
 		return nil, e
 	}
-	if s.deps.Client == nil || s.isAuthExpired() {
-		return nil, &Error{Code: CodeUnavailable, Message: "paired phone unavailable"}
+	if e := s.phoneRefusal(); e != nil {
+		return nil, e
 	}
 	s.liveMu.Lock()
 	defer s.liveMu.Unlock()
@@ -63,8 +63,8 @@ func (s *Server) handleVerifyArchive(ctx context.Context, params json.RawMessage
 	if e != nil {
 		return nil, e
 	}
-	if s.deps.Client == nil || s.isAuthExpired() {
-		return nil, &Error{Code: CodeUnavailable, Message: "paired phone unavailable"}
+	if e := s.phoneRefusal(); e != nil {
+		return nil, e
 	}
 	s.liveMu.Lock()
 	defer s.liveMu.Unlock()

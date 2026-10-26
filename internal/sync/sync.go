@@ -9,7 +9,6 @@ package sync
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -19,35 +18,20 @@ import (
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/events"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 
+	"github.com/johnlindquist/gmkit/internal/gm"
 	"github.com/johnlindquist/gmkit/internal/store"
 )
-
-// ErrLoggedOut signals that this pairing no longer works: the phone logged it
-// out, or Google rejects its credentials (HTTP 4xx on listen or token refresh,
-// e.g. SESSION_COOKIE_INVALID once the browser the Google-account pairing's
-// cookies came from rotated them). Reconnecting with the same session.json
-// hits the same wall, so consumers should stop hammering the relay and direct
-// the user to `gmcli auth` instead of treating it as a transient failure.
-var ErrLoggedOut = errors.New("pairing logged out or its credentials rejected; re-run `gmcli auth`")
 
 // Pump owns the conversion of libgm events into store writes.
 type Pump struct {
 	store    *store.Store
 	logger   zerolog.Logger
 	platform string
-	fatal    chan error
 }
 
 // New constructs a Pump that writes into st.
 func New(st *store.Store, logger zerolog.Logger) *Pump {
-	return &Pump{store: st, logger: logger, platform: "gm", fatal: make(chan error, 1)}
-}
-
-// Fatal returns a channel that receives terminal connection/auth errors.
-// Long-running commands should select on this and exit non-zero so supervisors
-// can restart or alert instead of silently idling after libgm gives up.
-func (p *Pump) Fatal() <-chan error {
-	return p.fatal
+	return &Pump{store: st, logger: logger, platform: "gm"}
 }
 
 // Handle is the entry point registered with gm.Client.Subscribe. It must
@@ -67,18 +51,14 @@ func (p *Pump) Handle(evt any) {
 		p.logger.Warn().Msg("Phone not responding — messages will queue until it reconnects")
 	case *events.PhoneRespondingAgain:
 		p.logger.Info().Msg("Phone responding again")
+	case *gm.VerdictChanged:
+		p.onVerdict(ctx, e.Verdict)
 	case *events.GaiaLoggedOut:
-		p.logger.Error().Err(ErrLoggedOut).Msg("libgm auth fatal error")
-		p.fail(ErrLoggedOut)
+		p.logger.Error().Msg("Phone reports this pairing logged out")
 	case *events.ListenFatalError:
-		if SessionRejected(e.Error) {
-			p.logger.Error().Err(e.Error).Msg("Google rejected the pairing's credentials")
-			p.fail(fmt.Errorf("%w: %v", ErrLoggedOut, e.Error))
-			return
-		}
-		err := fmt.Errorf("libgm listen fatal error: %w", e.Error)
+		// Not the daemon's verdict: the transport records Google's answer
+		// itself, and serve reconnects while the verdict allows it.
 		p.logger.Error().Err(e.Error).Msg("libgm listen fatal error")
-		p.fail(err)
 	case *events.ListenTemporaryError:
 		p.logger.Warn().Err(e.Error).Msg("libgm listen temporary error")
 	case *events.ListenRecovered:
@@ -91,18 +71,19 @@ func (p *Pump) Handle(evt any) {
 	}
 }
 
-// SessionRejected reports whether a libgm fatal error is Google answering the
-// session itself with a 4xx (401/403 on the long poll, 4xx on the token
-// refresh), as opposed to a server or transport failure a restart can clear.
-func SessionRejected(err error) bool {
-	var he events.HTTPError
-	return errors.As(err, &he) && he.Resp != nil && he.Resp.StatusCode >= 400 && he.Resp.StatusCode < 500
-}
-
-func (p *Pump) fail(err error) {
-	select {
-	case p.fatal <- err:
-	default:
+func (p *Pump) onVerdict(ctx context.Context, v gm.Verdict) {
+	evt := p.logger.Info()
+	if v.Unusable() || v.State == gm.VerdictUndecryptable {
+		evt = p.logger.Warn()
+	}
+	evt.Str("state", v.State).Str("reason", v.Reason).Msg("Pairing verdict changed")
+	raw, err := json.Marshal(v)
+	if err != nil {
+		p.logger.Error().Err(err).Msg("encode pairing verdict")
+		return
+	}
+	if err := p.store.AppendVerdict(ctx, v.Since, v.State, raw); err != nil {
+		p.logger.Error().Err(err).Msg("record pairing verdict")
 	}
 }
 

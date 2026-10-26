@@ -1,76 +1,92 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 
 	"github.com/spf13/cobra"
 
-	"github.com/johnlindquist/gmkit/internal/gm"
+	"github.com/johnlindquist/gmkit/internal/rpc"
 )
 
 func authGoogleCmd() *cobra.Command {
-	var cookiesFile string
+	var cookieFile string
 	c := &cobra.Command{
 		Use:   "google",
-		Short: "Pair with Google Messages using Google account emoji confirmation",
-		Long: "Pair with Google Messages using the Google account flow instead of QR. " +
-			"Cookie input is read from a file or stdin and is never printed; the resulting " +
-			"session is saved to $STORE/session.json (mode 0600).",
+		Short: "Pair with Google Messages as a Chrome profile's Google account (emoji confirmation)",
+		Long: "Ask the running daemon (`gmcli serve`) to pair as the Google account signed in to " +
+			"the Chrome profile whose cookie database is --cookie-file (default: the current " +
+			"pairing's profile). session.json records that file, never a cookie: every request " +
+			"reads the profile's current cookies. Prints the emoji to tap in Google Messages on " +
+			"the phone and waits for the pairing; the daemon then restarts to load it.\n\n" +
+			"With --json, each pairing event is printed to stdout as one JSON line " +
+			"({\"type\":\"pair.emoji\",\"data\":{\"emoji\":...}}, then pair.success or pair.error).",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			layout, err := resolveLayout()
 			if err != nil {
 				return err
 			}
-			cookies, err := readGoogleCookieInput(cookiesFile, cmd.InOrStdin())
+			ctx, cancel := signalContext(cmd.Context())
+			defer cancel()
+			client, err := rpc.Dial(layout.Socket)
 			if err != nil {
 				return err
 			}
-			logger := newLogger()
-			ctx, cancel := signalContext(cmd.Context())
-			defer cancel()
-
-			// A running daemon holds the old session; stop it before pairing.
-			// The configured service must restart to load the new session.
-			stopRunningDaemon(ctx, layout.Socket)
-
-			fmt.Fprintln(os.Stderr, "Starting Google account pairing...")
-			res, err := gm.PairGoogle(ctx, layout, logger, cookies, func(emoji string) {
-				fmt.Fprintf(os.Stderr, "On your phone, tap this emoji in Google Messages: %s\n", emoji)
-				fmt.Fprintln(os.Stderr, "Waiting for confirmation... (Ctrl-C to cancel)")
-			})
-			if err != nil {
-				return fmt.Errorf("pair google: %w", err)
+			defer client.Close()
+			if err := client.Subscribe(ctx); err != nil {
+				return fmt.Errorf("subscribe to daemon events: %w", err)
 			}
-			fmt.Fprintf(os.Stderr, "Paired. phone_id=%s session=%s\n", res.PhoneID, res.SessionPath)
-			return nil
+			var started struct {
+				Started    bool   `json:"started"`
+				Reason     string `json:"reason"`
+				CookieFile string `json:"cookie_file"`
+			}
+			if err := client.Call(ctx, "auth.pair.google", map[string]any{"cookie_file": cookieFile}, &started); err != nil {
+				return fmt.Errorf("auth.pair.google: %w", err)
+			}
+			if !started.Started {
+				return fmt.Errorf("pairing not started: %s", started.Reason)
+			}
+			if !flags.jsonOut {
+				fmt.Fprintf(os.Stderr, "Pairing as the Google account in %s...\n", started.CookieFile)
+			}
+			for {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case ev, ok := <-client.Events():
+					if !ok {
+						return fmt.Errorf("daemon closed the connection before pairing finished")
+					}
+					switch ev.Type {
+					case rpc.EventPairEmoji, rpc.EventPairSuccess, rpc.EventPairError:
+					default:
+						continue
+					}
+					data, _ := ev.Data.(map[string]any)
+					if flags.jsonOut {
+						line, _ := json.Marshal(ev)
+						fmt.Println(string(line))
+					}
+					switch ev.Type {
+					case rpc.EventPairEmoji:
+						if !flags.jsonOut {
+							fmt.Fprintf(os.Stderr, "On your phone, tap this emoji in Google Messages: %v\n", data["emoji"])
+							fmt.Fprintln(os.Stderr, "Waiting for confirmation... (Ctrl-C to stop waiting)")
+						}
+					case rpc.EventPairSuccess:
+						if !flags.jsonOut {
+							fmt.Fprintf(os.Stderr, "Paired. phone_id=%v; the daemon restarts to load the new pairing.\n", data["phone_id"])
+						}
+						return nil
+					case rpc.EventPairError:
+						return fmt.Errorf("pairing failed: %v", data["error"])
+					}
+				}
+			}
 		},
 	}
-	c.Flags().StringVar(&cookiesFile, "cookies-file", "-", "path to cookie JSON/cURL input, or - for stdin")
+	c.Flags().StringVar(&cookieFile, "cookie-file", "", "Chrome profile Cookies database of the account to pair as (default: the current pairing's)")
 	return c
 }
-
-func readGoogleCookieInput(path string, stdin io.Reader) (map[string]string, error) {
-	var (
-		data []byte
-		err  error
-	)
-	if path == "-" {
-		data, err = io.ReadAll(stdin)
-	} else {
-		data, err = os.ReadFile(path)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read cookie input: %w", err)
-	}
-	return gm.ParseGoogleCookieInput(string(data))
-}
-
-// parseGoogleCookieInput is a thin alias kept for the package tests.
-func parseGoogleCookieInput(input string) (map[string]string, error) {
-	return gm.ParseGoogleCookieInput(input)
-}
-
-// requiredGoogleCookies mirrors the gm package's list for the tests.
-var requiredGoogleCookies = []string{"SID", "HSID", "OSID", "SSID", "APISID", "SAPISID"}

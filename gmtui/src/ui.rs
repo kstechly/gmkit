@@ -80,14 +80,14 @@ fn render_prompt(frame: &mut Frame, app: &App) {
 /// Diagnostics + key reference (the `doctor` of the TUI).
 fn render_doctor(frame: &mut Frame, app: &App) {
     let s = &app.status;
-    let conn = if s.auth_expired {
-        "pairing expired (press p to re-pair)"
+    let conn = if let Some(problem) = s.pairing_problem() {
+        format!("{problem} (press p to re-pair)")
     } else if s.connected {
-        "connected to phone relay"
+        "connected to phone relay".to_string()
     } else if s.offline {
-        "offline archive (no phone)"
+        "offline archive (no phone)".to_string()
     } else {
-        "phone relay down (auto-retrying)"
+        "phone relay down (auto-retrying)".to_string()
     };
     let lines: Vec<Line> = vec![
         Line::raw(""),
@@ -136,7 +136,7 @@ fn render_doctor(frame: &mut Frame, app: &App) {
     );
 }
 
-/// Full pairing flow as an overlay. Google-account (cookies → emoji) is the
+/// Full pairing flow as an overlay. Google-account (profile → emoji) is the
 /// primary path; legacy QR reachable via ctrl-r.
 fn render_pairing(frame: &mut Frame, app: &App) {
     use crate::app::PairStage;
@@ -147,22 +147,24 @@ fn render_pairing(frame: &mut Frame, app: &App) {
     let mut cursor: Option<(u16, u16)> = None; // offsets inside the overlay
 
     match &pairing.stage {
-        PairStage::EnterCookies => {
+        PairStage::EnterProfile => {
             lines.push(Line::styled(
                 "  Google removed QR pairing, so pairing uses your Google account:",
                 Style::default().fg(OTHER),
             ));
             lines.push(Line::raw(""));
             lines.push(Line::raw(
-                "   1. Open messages.google.com in your browser and sign in",
+                "   1. Sign in to messages.google.com in a Chrome profile",
             ));
             lines.push(Line::raw(
-                "   2. Open DevTools (cmd-opt-I) → Network tab → reload the page",
+                "   2. Enter that profile's Cookies file (absolute path), e.g.",
             ));
             lines.push(Line::raw(
-                "   3. Right-click any request → Copy → Copy as cURL",
+                "      /home/you/.config/google-chrome/Default/Cookies",
             ));
-            lines.push(Line::raw("   4. Paste below (cmd-v) and press enter"));
+            lines.push(Line::raw(
+                "   3. Or leave it empty to re-pair the current pairing's profile",
+            ));
             lines.push(Line::raw(""));
             let width = 70usize;
             let scroll = pairing.input.visual_scroll(width);
@@ -183,7 +185,7 @@ fn render_pairing(frame: &mut Frame, app: &App) {
             ));
             lines.push(Line::raw(""));
             lines.push(Line::styled(
-                "  cookies stay on this machine (session.json, mode 0600)",
+                "  gmcli reads that profile's current cookies; it never copies them",
                 Style::default().fg(DIM),
             ));
             if !pairing.message.is_empty() {
@@ -832,9 +834,9 @@ fn render_compose(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
-    let conn = if app.status.auth_expired {
+    let conn = if let Some(problem) = app.status.pairing_problem() {
         Span::styled(
-            "✖ pairing expired — press p to re-pair (esc first if searching)",
+            format!("✖ {problem} — press p to re-pair (esc first if searching)"),
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )
     } else if app.daemon_lost {
@@ -848,7 +850,7 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled("◌ offline archive (no phone)", Style::default().fg(DIM))
     } else {
         Span::styled(
-            "○ phone relay down — auto-retrying · check phone is online; `gmcli auth` if pairing expired",
+            "○ phone relay down — auto-retrying · check phone is online",
             Style::default().fg(WARN),
         )
     };

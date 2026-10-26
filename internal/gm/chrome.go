@@ -16,7 +16,8 @@ var chromeProfileCookieReader string
 // Browser-level CDP follows the last-used profile, which may be another account.
 // browser-cookie3 owns SQLite snapshots and OS keyring decryption; this wrapper
 // never opens a tab, changes browser focus, or caches a credential snapshot.
-func ChromeProfileCookies(ctx context.Context, cookieFile string) (map[string]string, error) {
+// required names the cookies the caller's request needs (pairing or relay).
+func ChromeProfileCookies(ctx context.Context, cookieFile string, required []string) (map[string]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "uv", "run", "--offline", "--no-project", "--with", "browser-cookie3==0.20.1", "python", "-c", chromeProfileCookieReader, cookieFile)
@@ -29,7 +30,7 @@ func ChromeProfileCookies(ctx context.Context, cookieFile string) (map[string]st
 		return nil, fmt.Errorf("decode Chrome profile cookies: %w", err)
 	}
 	cookies = filterGoogleCookies(cookies)
-	if err := validateGoogleCookies(cookies, requiredRelayGoogleCookies); err != nil {
+	if err := validateGoogleCookies(cookies, required); err != nil {
 		return nil, err
 	}
 	return cookies, nil

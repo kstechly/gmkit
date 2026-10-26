@@ -26,9 +26,10 @@ gmtui          # that's it — pairing happens in the TUI too (press p)
 
 On first run (or when Google expires the pairing), press `p`. Google
 removed QR pairing from current Messages builds, so pairing uses your
-Google account: sign in to messages.google.com in a browser, copy any
-request as cURL from DevTools → Network, paste it into the overlay, and tap
-the emoji Google shows on your phone. The daemon restarts itself with the
+Google account: sign in to messages.google.com in a Chrome profile, enter
+that profile's `Cookies` file in the overlay (empty re-pairs the current
+profile), and tap the emoji Google shows on your phone. gmcli reads the
+profile's current cookies on every request and never stores a copy. The daemon restarts itself with the
 new session and everything syncs. (Older Messages builds can still use the
 QR flow via ctrl-r; `gmcli auth google` in a terminal also works.)
 

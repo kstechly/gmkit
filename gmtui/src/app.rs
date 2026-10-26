@@ -57,12 +57,12 @@ pub enum Focus {
 }
 
 /// Where the in-TUI pairing flow currently is. Google killed QR pairing on
-/// current Messages builds, so the Google-account (cookie + emoji) flow is
+/// current Messages builds, so the Google-account (profile + emoji) flow is
 /// the primary path; QR remains reachable as a legacy fallback.
 #[derive(PartialEq)]
 pub enum PairStage {
-    /// Collecting pasted browser cookies for the Google-account flow.
-    EnterCookies,
+    /// Collecting the Chrome profile cookie file for the Google-account flow.
+    EnterProfile,
     /// RPC accepted; waiting for the daemon to talk to Google.
     Waiting,
     /// Legacy QR flow: render this code.
@@ -495,13 +495,13 @@ impl App {
         });
     }
 
-    /// Open the pairing overlay in the Google-account flow: paste browser
-    /// cookies, then tap the emoji Google shows on the phone. The daemon
+    /// Open the pairing overlay in the Google-account flow: name the Chrome
+    /// profile, then tap the emoji Google shows on the phone. The daemon
     /// broadcasts pair.emoji / pair.success / pair.error; on success it
     /// restarts itself and our reconnect loop finishes the job.
     fn start_pairing(&mut self) {
         self.pairing = Some(Pairing {
-            stage: PairStage::EnterCookies,
+            stage: PairStage::EnterProfile,
             input: Input::default(),
             qr: None,
             url: None,
@@ -509,22 +509,19 @@ impl App {
         });
     }
 
-    /// Submit the pasted cookies to the daemon's Google pairing flow.
-    fn submit_pairing_cookies(&mut self) {
+    /// Start the daemon's Google pairing flow as the named Chrome profile
+    /// (empty: the current pairing's profile).
+    fn submit_pairing_profile(&mut self) {
         let Some(p) = self.pairing.as_mut() else {
             return;
         };
-        let cookies = p.input.value().trim().to_string();
-        if cookies.is_empty() {
-            p.message = "paste your messages.google.com cookies first".to_string();
-            return;
-        }
+        let cookie_file = p.input.value().trim().to_string();
         p.stage = PairStage::Waiting;
-        p.message = "checking cookies with Google…".to_string();
+        p.message = "asking Google for a pairing…".to_string();
         let rpc = self.rpc.clone();
         self.spawn(async move {
             match rpc
-                .call("auth.pair.google", json!({"cookies_input": cookies}))
+                .call("auth.pair.google", json!({"cookie_file": cookie_file}))
                 .await
             {
                 Ok(_) => None,
@@ -1004,7 +1001,6 @@ impl App {
                     p.message =
                         "paired ✓ — restarting the daemon with the new session…".to_string();
                 }
-                self.status.auth_expired = false;
             }
             "pair.error" => {
                 if let Some(p) = self.pairing.as_mut() {
@@ -1028,13 +1024,17 @@ impl App {
                 match state {
                     "ready" | "listen_recovered" | "phone_responding" => {
                         self.status.connected = true;
-                        self.status.auth_expired = false;
+                    }
+                    "verdict" => {
+                        self.status.verdict = ev
+                            .data
+                            .get("verdict")
+                            .and_then(|v| serde_json::from_value(v.clone()).ok());
                     }
                     "refreshed" => {
                         // The daemon just imported fresh data outside the
                         // event stream: refetch everything visible.
                         self.status.connected = true;
-                        self.status.auth_expired = false;
                         self.fetch_chats();
                         self.fetch_status();
                         if let Some(chat) = self.current_chat.clone() {
@@ -1058,10 +1058,6 @@ impl App {
                     }
                     "listen_temporary_error" => {
                         self.status.connected = false;
-                    }
-                    "logged_out" => {
-                        self.status.connected = false;
-                        self.status.auth_expired = true;
                     }
                     _ => {}
                 }
@@ -1271,7 +1267,7 @@ impl App {
         let stage_entering = self
             .pairing
             .as_ref()
-            .is_some_and(|p| p.stage == PairStage::EnterCookies);
+            .is_some_and(|p| p.stage == PairStage::EnterProfile);
         let failed = self
             .pairing
             .as_ref()
@@ -1282,7 +1278,7 @@ impl App {
                 // continues regardless, and in-flight flows just expire.
                 self.pairing = None;
             }
-            KeyCode::Enter if stage_entering => self.submit_pairing_cookies(),
+            KeyCode::Enter if stage_entering => self.submit_pairing_profile(),
             // Legacy QR flow escape hatch (older Messages builds only).
             KeyCode::Char('r')
                 if key.modifiers.contains(KeyModifiers::CONTROL) && stage_entering =>
@@ -1317,7 +1313,7 @@ impl App {
         let target = if let Some(p) = self
             .pairing
             .as_mut()
-            .filter(|p| p.stage == PairStage::EnterCookies)
+            .filter(|p| p.stage == PairStage::EnterProfile)
         {
             Some(&mut p.input)
         } else if let Some(p) = self.prompt.as_mut() {

@@ -46,10 +46,10 @@ Read methods (always available):
 | Method             | Params                                                              | Result |
 | ------------------ | ------------------------------------------------------------------- | ------ |
 | `ping`             | —                                                                   | `{pong, version, schema_version}` |
-| `status`           | —                                                                   | `{coverage, connected, offline, auth_expired, send_mode, pending_approvals, conversations, messages, last_event_ms, last_connect_ms, updated_at_ms}` — `offline` = deliberately no phone connection; `auth_expired` = phone reports the pairing logged out (`gmcli auth` required; daemon keeps serving the archive) |
+| `status`           | —                                                                   | `{coverage, connected, offline, verdict, send_mode, pending_approvals, conversations, messages, last_event_ms, last_connect_ms, updated_at_ms}` — `offline` = deliberately no phone connection (`verdict` null); `verdict` = the pairing verdict below |
 | `daemon.shutdown`  | —                                                                   | `{shutting_down: true}`; the daemon exits. Used by `gmcli auth` to hand over a fresh session — on-demand clients spawn a replacement. |
 | `auth.pair`        | —                                                                   | `{started}`; legacy QR pairing in the daemon. Emits `pair.qr {url}`, then `pair.success`/`pair.error`. Google removed the QR scanner from current Messages builds — prefer `auth.pair.google`. |
-| `auth.pair.google` | `{cookies_input}` — raw Cookie header / Copy-as-cURL / fetch / JSON | `{started}`; Google-account pairing. Emits `pair.emoji {emoji}` (tap it on the phone), then `pair.success {phone_id}` / `pair.error {error}`. On success the daemon restarts to load the new session. |
+| `auth.pair.google` | `{cookie_file?}` — absolute path of the Chrome profile's `Cookies` database; default: the current pairing's | `{started, cookie_file}`; Google-account pairing as that profile's account. Emits `pair.emoji {emoji}` (tap it on the phone), then `pair.success {phone_id}` / `pair.error {error}`. On success the daemon restarts to load the new session. |
 | `media.download`   | `{message_id}`                                                      | `{path, bytes, mime_type}`; downloads+decrypts the attachment into `<store>/media/`. |
 | `alias.set`        | `{target_type, target_id, alias}` — target_type: contact\|conversation | `{set: true}`; local rename, never sent to Google. |
 | `alias.rm`         | `{target_type, target_id}`                                          | `{removed: true}` |
@@ -131,7 +131,7 @@ cleanly with code 1003.
 | `conversation.updated` | `{conversation}`                                 |
 | `approval.requested`   | approval row                                     |
 | `approval.resolved`    | approval row                                     |
-| `sync.status`          | `{state}`: `ready`, `refreshed` (bulk import finished — refetch), `refresh_failed`, `phone_not_responding`, `phone_responding`, `listen_temporary_error`, `listen_recovered`, `logged_out` |
+| `sync.status`          | `{state}`: `ready`, `refreshed` (bulk import finished — refetch), `refresh_failed`, `phone_not_responding`, `phone_responding`, `listen_temporary_error`, `listen_recovered`, `verdict` (with `{verdict}`: the pairing verdict changed) |
 
 Slow consumers may have events dropped rather than stall the daemon; treat
 the stream as advisory and re-query when reconnecting.

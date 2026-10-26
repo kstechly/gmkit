@@ -105,7 +105,7 @@ async fn main() -> Result<()> {
     app.request_refresh();
 
     let mut terminal = ratatui::init();
-    // Bracketed paste lets cookie blobs land in the pairing overlay intact.
+    // Bracketed paste lets pasted paths and text land in inputs intact.
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
     let result = run(&mut terminal, &mut app, &mut events, &socket, &event_tx).await;
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);

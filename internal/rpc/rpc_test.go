@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,9 +10,13 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
-	"go.mau.fi/mautrix-gmessages/pkg/libgm/events"
+	"go.mau.fi/mautrix-gmessages/pkg/libgm"
+	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 
+	"github.com/johnlindquist/gmkit/internal/gm"
+	"github.com/johnlindquist/gmkit/internal/paths"
 	"github.com/johnlindquist/gmkit/internal/store"
+	gmsync "github.com/johnlindquist/gmkit/internal/sync"
 )
 
 // shortSocketPath returns a socket path short enough for the 104-byte
@@ -31,6 +36,13 @@ func shortSocketPath(t *testing.T) string {
 // unix socket and returns a connected client.
 func startTestServer(t *testing.T, mode SendMode) (*Client, *store.Store, *Server) {
 	t.Helper()
+	return startTestServerDeps(t, func(st *store.Store) Deps {
+		return Deps{Store: st, Logger: zerolog.Nop(), Version: "test", SendMode: mode}
+	})
+}
+
+func startTestServerDeps(t *testing.T, deps func(*store.Store) Deps) (*Client, *store.Store, *Server) {
+	t.Helper()
 	dir := t.TempDir()
 	st, err := store.Open(context.Background(), filepath.Join(dir, "test.db"))
 	if err != nil {
@@ -38,12 +50,7 @@ func startTestServer(t *testing.T, mode SendMode) (*Client, *store.Store, *Serve
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	srv := NewServer(Deps{
-		Store:    st,
-		Logger:   zerolog.Nop(),
-		Version:  "test",
-		SendMode: mode,
-	})
+	srv := NewServer(deps(st))
 	sock := shortSocketPath(t)
 	ln, err := Listen(sock)
 	if err != nil {
@@ -407,33 +414,77 @@ func TestChatsFindAndRichSearch(t *testing.T) {
 	}
 }
 
-func TestAuthExpiredStatusAndShutdown(t *testing.T) {
-	client, _, srv := startTestServer(t, SendOff)
+// openPairedClient opens a gm.Client on a QR-style pairing record. It never
+// connects; tests drive it through the events libgm would deliver.
+func openPairedClient(t *testing.T) *gm.Client {
+	t.Helper()
+	dir := t.TempDir()
+	raw, err := json.Marshal(&libgm.AuthData{Browser: &gmproto.Device{SourceID: "browser"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout := paths.Layout{Session: filepath.Join(dir, "session.json")}
+	if err := os.WriteFile(layout.Session, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := gm.Open(layout, zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// Status carries the daemon's pairing verdict, and each verdict change
+// reaches subscribers as sync.status.
+func TestStatusAndEventsCarryPairingVerdict(t *testing.T) {
+	phone := openPairedClient(t)
+	client, _, srv := startTestServerDeps(t, func(st *store.Store) Deps {
+		return Deps{Store: st, Client: phone, Pump: gmsync.New(st, zerolog.Nop()), Logger: zerolog.Nop(), Version: "test"}
+	})
 	if err := client.Subscribe(callCtx(t)); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-
-	srv.HandleGMEvent(&events.GaiaLoggedOut{})
-
 	var status struct {
-		AuthExpired bool `json:"auth_expired"`
+		Verdict *gm.Verdict `json:"verdict"`
 	}
 	if err := client.Call(callCtx(t), "status", nil, &status); err != nil {
 		t.Fatalf("status: %v", err)
 	}
-	if !status.AuthExpired {
-		t.Fatal("auth_expired should be true after GaiaLoggedOut")
+	if status.Verdict == nil || status.Verdict.State != gm.VerdictConnecting {
+		t.Fatalf("status verdict %+v", status.Verdict)
 	}
 
-	// A fresh session clears the flag.
-	srv.HandleGMEvent(&events.ClientReady{})
-	if err := client.Call(callCtx(t), "status", nil, &status); err != nil {
-		t.Fatalf("status: %v", err)
+	srv.HandleGMEvent(&gm.VerdictChanged{Verdict: gm.Verdict{State: gm.VerdictLoggedOut, Reason: "the phone reports this pairing logged out"}})
+	select {
+	case ev := <-client.Events():
+		raw, _ := json.Marshal(ev.Data)
+		var data struct {
+			State   string     `json:"state"`
+			Verdict gm.Verdict `json:"verdict"`
+		}
+		_ = json.Unmarshal(raw, &data)
+		if ev.Type != EventSyncStatus || data.State != "verdict" || data.Verdict.State != gm.VerdictLoggedOut {
+			t.Fatalf("event %s %s", ev.Type, raw)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("verdict change never reached the subscriber")
 	}
-	if status.AuthExpired {
-		t.Fatal("auth_expired should clear on ClientReady")
-	}
+}
 
+// An offline daemon refuses phone work with one reason, whatever the method.
+func TestPhoneMethodsRefuseWithoutPairedPhone(t *testing.T) {
+	client, _, _ := startTestServer(t, SendDirect)
+	for _, method := range []string{"chats.scan", "chats.read", "sync.refresh", "history.backfill"} {
+		err := client.Call(callCtx(t), method, map[string]any{"folder": "inbox", "conversation_id": "c"}, nil)
+		var rpcErr *Error
+		if !errors.As(err, &rpcErr) || rpcErr.Code != CodeUnavailable {
+			t.Fatalf("%s: %v", method, err)
+		}
+	}
+}
+
+func TestDaemonShutdownSignals(t *testing.T) {
+	client, _, srv := startTestServer(t, SendOff)
 	// daemon.shutdown fires the shutdown signal.
 	if err := client.Call(callCtx(t), "daemon.shutdown", nil, nil); err != nil {
 		t.Fatalf("daemon.shutdown: %v", err)

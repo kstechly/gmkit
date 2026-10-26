@@ -82,11 +82,11 @@ func TestArchiveCanceledBeforeWrite(t *testing.T) {
 	}
 }
 func TestReadinessUsesPhoneSettings(t *testing.T) {
-	c := &Client{settings: &gmproto.Settings{}}
+	c := &Client{settings: &gmproto.Settings{}, facts: newVerdictFacts(time.Now())}
 	if err := c.WaitForReady(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	c = &Client{}
+	c = &Client{facts: newVerdictFacts(time.Now())}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
 	if err := c.WaitForReady(ctx); !errors.Is(err, context.DeadlineExceeded) {
@@ -126,7 +126,7 @@ func TestArchiveTimeoutCannotStartLateWrite(t *testing.T) {
 	close(api.release)
 }
 func TestReadinessAcceptsSettingsAfterWaitStarts(t *testing.T) {
-	c := &Client{}
+	c := &Client{facts: newVerdictFacts(time.Now())}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	done := make(chan error, 1)

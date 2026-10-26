@@ -2,9 +2,9 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -17,6 +17,10 @@ import (
 	"github.com/johnlindquist/gmkit/internal/store"
 	gmsync "github.com/johnlindquist/gmkit/internal/sync"
 )
+
+// pairingProbeInterval is how often a daemon whose relay connection dropped
+// tries again.
+const pairingProbeInterval = 2 * time.Minute
 
 func serveCmd() *cobra.Command {
 	var sends string
@@ -123,50 +127,44 @@ func serveCmd() *cobra.Command {
 			go func() { serveErr <- server.Serve(ctx, ln) }()
 			fmt.Fprintf(os.Stderr, "Daemon ready. RPC socket: %s (send mode: %s). Ctrl-C to stop.\n", sock, mode)
 
-			// pumpFatal carries the pump's terminal error to the loop below
-			// (nil, blocking forever, in offline mode). The relay also cancels
-			// the initial import: a pairing Google rejects fails the pump
-			// within a second of Connect, and the import would otherwise run
-			// against the dead client until its deadline and exit.
-			importCtx, cancelImport := context.WithCancel(ctx)
-			defer cancelImport()
-			var pumpFatal chan error
-			if pump != nil {
-				pumpFatal = make(chan error, 1)
+			// The initial import runs once a connection is up: at start, or
+			// after the probe below brings the pairing back.
+			var importing, imported atomic.Bool
+			startImport := func() {
+				if noImport || imported.Load() || !importing.CompareAndSwap(false, true) {
+					return
+				}
 				go func() {
-					select {
-					case err := <-pump.Fatal():
-						pumpFatal <- err
-						cancelImport()
-					case <-ctx.Done():
+					defer importing.Store(false)
+					report, err := runInitialImport(ctx, server, logger)
+					if err != nil {
+						return
 					}
+					imported.Store(true)
+					// The import writes through the pump directly, which
+					// bypasses the event broadcaster: tell clients that
+					// connected early to refetch.
+					server.Broadcast(rpc.EventSyncStatus, map[string]any{"state": "refreshed", "coverage": report.Coverage})
 				}()
 			}
+			// The probe is the one recovery path. libgm stops its long poll
+			// on any fatal error; while the verdict leaves hope (anything but
+			// logged_out, which only a re-pair fixes), reconnect with the
+			// profile's current cookies. Each attempt's answer lands in the
+			// verdict through the transport.
+			var probe <-chan time.Time
 			if client != nil {
 				fmt.Fprintln(os.Stderr, "Connecting to Google Messages relay...")
 				if err := client.Connect(); err != nil {
-					if !gmsync.SessionRejected(err) {
-						return fmt.Errorf("connect: %w", err)
-					}
-					server.MarkAuthExpired(err.Error())
-					logger.Warn().Err(err).Msg("Pairing rejected on connect; serving archive until recovery")
+					logger.Warn().Err(err).Str("verdict", client.Verdict().State).Msg("Connect failed; probing every " + pairingProbeInterval.String())
 				}
 				defer client.Disconnect()
-
-				if !noImport && client.IsConnected() {
-					report, err := runInitialImport(importCtx, server, logger)
-					switch {
-					case err == nil:
-						// The import writes through the pump directly, which
-						// bypasses the event broadcaster: tell clients that
-						// connected early to refetch.
-						server.Broadcast(rpc.EventSyncStatus, map[string]any{"state": "refreshed", "coverage": report.Coverage})
-					case len(pumpFatal) == 0:
-						return err
-					}
-					// Otherwise the pump's fatal error, already queued, is
-					// what stopped the import; the loop below handles it.
+				if client.IsConnected() {
+					startImport()
 				}
+				ticker := time.NewTicker(pairingProbeInterval)
+				defer ticker.Stop()
+				probe = ticker.C
 			}
 
 			heartbeat := time.NewTicker(syncHeartbeatInterval)
@@ -176,21 +174,16 @@ func serveCmd() *cobra.Command {
 				case <-ctx.Done():
 					fmt.Fprintln(os.Stderr, "Shutting down...")
 					return nil
-				case err := <-pumpFatal:
-					if errors.Is(err, gmsync.ErrLoggedOut) {
-						// Pairing expired. Exiting here would just make
-						// on-demand clients respawn us into the same wall —
-						// a crashloop that hammers Google. Stay up, stop
-						// talking to the phone, and serve the archive with
-						// an auth_expired status until the user re-pairs.
-						logger.Warn().Err(err).Msg("Pairing dead. Serving archive only; run `gmcli auth` to re-pair.")
-						server.MarkAuthExpired(err.Error())
-						server.Broadcast(rpc.EventSyncStatus, map[string]any{"state": "logged_out"})
-						client.Disconnect()
-						pumpFatal = nil // stop selecting on further fatals
+				case <-probe:
+					if client.IsConnected() || server.Pairing() || client.Verdict().State == gm.VerdictLoggedOut {
 						continue
 					}
-					return err
+					client.Disconnect()
+					if err := client.Connect(); err != nil {
+						logger.Info().Err(err).Str("verdict", client.Verdict().State).Msg("Pairing probe did not connect")
+						continue
+					}
+					startImport()
 				case err := <-serveErr:
 					if err != nil {
 						return fmt.Errorf("rpc server: %w", err)

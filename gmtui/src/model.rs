@@ -146,9 +146,9 @@ pub struct DaemonStatus {
     /// Daemon deliberately running without a phone connection (--offline).
     #[serde(default)]
     pub offline: bool,
-    /// The phone reported this pairing logged out; `gmcli auth` required.
+    /// The daemon's pairing verdict; None for an offline daemon.
     #[serde(default)]
-    pub auth_expired: bool,
+    pub verdict: Option<Verdict>,
     #[serde(default)]
     pub send_mode: String,
     #[serde(default)]
@@ -159,6 +159,27 @@ pub struct DaemonStatus {
     pub messages: i64,
     #[serde(default)]
     pub last_event_ms: i64,
+}
+
+/// The daemon's answer to "does the pairing work" (gm.Verdict): state is
+/// connecting, live, rejected, source_unreadable, logged_out or undecryptable.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct Verdict {
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
+impl DaemonStatus {
+    /// What is wrong with the pairing, when the verdict says something is.
+    pub fn pairing_problem(&self) -> Option<String> {
+        let v = self.verdict.as_ref()?;
+        match v.state.as_str() {
+            "" | "live" | "connecting" => None,
+            state => Some(format!("pairing {state}: {}", v.reason)),
+        }
+    }
 }
 
 /// One event notification from the daemon ("event" params).
