@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/coder/websocket"
@@ -54,6 +57,14 @@ func TestChromeCookiesReadsBrowserWithoutOpeningATab(t *testing.T) {
 	}
 	if len(cookies) != 7 || cookies["SID"] != "fresh" {
 		t.Fatal("wrong cookie selection")
+	}
+	profile := t.TempDir()
+	address, _ := url.Parse(server.URL)
+	if err := os.WriteFile(filepath.Join(profile, "DevToolsActivePort"), []byte(address.Port()+"\n/browser\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ChromeCookies(context.Background(), profile); err != nil {
+		t.Fatal("owned browser profile source failed:", err)
 	}
 }
 

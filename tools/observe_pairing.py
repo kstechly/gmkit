@@ -4,6 +4,7 @@ import argparse
 import datetime
 import json
 import os
+from pathlib import Path
 import socket
 import subprocess
 import time
@@ -41,7 +42,11 @@ def main():
     report(event="start", required_healthy_seconds=args.duration)
     while True:
         try:
-            with urllib.request.urlopen(chrome + "/json/version", timeout=5):
+            endpoint = chrome
+            if os.path.isabs(chrome):
+                port = (Path(chrome) / "DevToolsActivePort").read_text().splitlines()[0]
+                endpoint = "http://127.0.0.1:" + port
+            with urllib.request.urlopen(endpoint + "/json/version", timeout=5):
                 pass
         except OSError:
             healthy_since = None

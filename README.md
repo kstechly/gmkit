@@ -329,9 +329,9 @@ subsequently move a thread back to the inbox.
 
 Protocol investigation and live evidence: [folder pagination](docs/research/folder-pagination.md).
 
-### Following a running Chrome login
+### Using an isolated Chrome login
 
-Set `GMCLI_CHROME_CDP=http://127.0.0.1:9222` on the standing `gmcli serve` process to use the Google cookies from that browser for every relay/config request. The client reads the browser CDP endpoint without opening or changing tabs. Fresh cookie snapshots stay in memory; logs never print them. A missing browser or signed-out profile returns an unavailable-source error; the supervisor reconnects once Chrome returns. A Google 401/403 from any request, including acknowledgments, marks the pairing expired so the recovery watcher can re-pair it.
+Set `GMCLI_CHROME_CDP` on the standing `gmcli serve` process to an owned, independently authenticated Chrome profile directory. Run that browser headlessly with `--remote-debugging-port=0`; the client reads its `DevToolsActivePort` on every relay/config request, including after browser restarts. A CDP URL is also accepted. Do not point the standing daemon at the user's visible browser or seed a profile with copied cookies from that browser: authentication failures would affect their session too. Fresh cookie snapshots stay in memory; logs never print them. A missing browser or signed-out profile returns an unavailable-source error; the supervisor reconnects once Chrome returns. A Google 401/403 from any request, including acknowledgments, marks the pairing expired so the recovery watcher can re-pair it.
 
 Google pairing creates a separate device identity for gmcli after loading browser configuration. Reusing Chrome's device identity with separate encryption keys causes HMAC failures when Messages for Web becomes active. Cookies can follow Chrome while the paired device identity and keys remain gmcli's own.
 

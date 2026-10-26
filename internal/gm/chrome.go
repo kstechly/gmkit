@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,6 +20,16 @@ import (
 func ChromeCookies(ctx context.Context, endpoint string) (map[string]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	// An owned Chrome profile uses --remote-debugging-port=0. Resolve its
+	// current port each time, including after a browser restart.
+	if filepath.IsAbs(endpoint) {
+		active, err := os.ReadFile(filepath.Join(endpoint, "DevToolsActivePort"))
+		if err != nil {
+			return nil, fmt.Errorf("Chrome profile source unavailable: %w", err)
+		}
+		port, _, _ := strings.Cut(string(active), "\n")
+		endpoint = "http://127.0.0.1:" + port
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(endpoint, "/")+"/json/version", nil)
 	if err != nil {
 		return nil, err
