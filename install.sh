@@ -40,7 +40,9 @@ quick_start() {
   echo
   info "Done. Quick start:"
   echo "  gmcli auth     # one-time pairing: scan the QR with Google Messages on your phone"
-  echo "  gmtui          # browse, search, and approve — the daemon starts automatically"
+  echo "  gmcli serve    # start the daemon first, in its own terminal or as a service"
+  echo "                 #   gmcli --read-only=false serve  queues sends for approval"
+  echo "  gmtui          # browse, search, and approve through the running daemon"
   echo "  claude mcp add google-messages -- gmcli mcp    # optional: hook up AI agents"
 }
 
