@@ -9,10 +9,8 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
 
-	"github.com/johnlindquist/gmkit/internal/gm"
 	"github.com/johnlindquist/gmkit/internal/output"
 	"github.com/johnlindquist/gmkit/internal/rpc"
-	"github.com/johnlindquist/gmkit/internal/store"
 	gmsync "github.com/johnlindquist/gmkit/internal/sync"
 )
 
@@ -43,37 +41,26 @@ func syncCmd() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		if _, e = os.Stat(layout.Socket); e == nil {
-			return fmt.Errorf("daemon owns this session; use its event subscription instead of sync --follow")
+		client, e := rpc.Dial(layout.Socket)
+		if e != nil {
+			return e
 		}
+		defer client.Close()
 		ctx, cancel := signalContext(cmd.Context())
 		defer cancel()
-		st, e := store.Open(ctx, layout.Database)
-		if e != nil {
+		if e := client.Subscribe(ctx); e != nil {
 			return e
 		}
-		defer st.Close()
-		client, e := gm.Open(layout, newLogger())
-		if e != nil {
-			return e
-		}
-		pump := gmsync.New(st, newLogger())
-		client.Subscribe(pump.Handle)
-		if e = client.Connect(); e != nil {
-			return e
-		}
-		defer client.Disconnect()
-		fmt.Fprintln(os.Stderr, "Streaming phone events; connection activity does not establish folder coverage.")
-		heartbeat := time.NewTicker(syncHeartbeatInterval)
-		defer heartbeat.Stop()
+		fmt.Fprintln(os.Stderr, "Streaming daemon events; connection activity does not establish folder coverage.")
 		for {
 			select {
 			case <-ctx.Done():
 				return nil
-			case e := <-pump.Fatal():
-				return e
-			case <-heartbeat.C:
-				if e = st.TouchSync(ctx); e != nil {
+			case event, ok := <-client.Events():
+				if !ok {
+					return fmt.Errorf("daemon event connection closed")
+				}
+				if e := output.JSON(os.Stdout, event); e != nil {
 					return e
 				}
 			}

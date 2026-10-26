@@ -4,14 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
-	"github.com/johnlindquist/gmkit/internal/gm"
 	"github.com/johnlindquist/gmkit/internal/history"
 	"github.com/johnlindquist/gmkit/internal/output"
-	"github.com/johnlindquist/gmkit/internal/store"
-	gmsync "github.com/johnlindquist/gmkit/internal/sync"
 )
 
 func historyCmd() *cobra.Command {
@@ -66,42 +64,18 @@ func historyLookupCmd() *cobra.Command {
 			if phone == "" {
 				return fmt.Errorf("--phone is required")
 			}
-			layout, err := resolveLayout()
-			if err != nil {
-				return err
-			}
-			logger := newLogger()
-			ctx, cancel := signalContext(context.Background())
+			ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Minute)
 			defer cancel()
-
-			st, err := store.Open(ctx, layout.Database)
-			if err != nil {
-				return fmt.Errorf("open store: %w", err)
+			var result struct {
+				ConversationID string                 `json:"conversation_id"`
+				Name           string                 `json:"name"`
+				Backfill       history.BackfillResult `json:"backfill"`
 			}
-			defer st.Close()
-
-			client, err := gm.Open(layout, logger)
-			if err != nil {
+			if err := callDaemon(ctx, "history.lookup", map[string]any{"phone": phone, "requests": requests, "count": count}, &result); err != nil {
 				return err
 			}
-			pump := gmsync.New(st, logger)
-			client.Subscribe(pump.Handle)
-			if err := client.Connect(); err != nil {
-				return fmt.Errorf("connect: %w", err)
-			}
-			defer client.Disconnect()
-
-			conv, err := history.LookupConversation(client, pump, phone)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(os.Stderr, "Found conversation: %s (ID: %s)\n", conv.GetName(), conv.GetConversationID())
-
-			res, err := history.Backfill(ctx, st, client, pump, conv.GetConversationID(), requests, count)
-			if err != nil {
-				return err
-			}
-			return printBackfillResult(res)
+			fmt.Fprintf(os.Stderr, "Found conversation: %s (ID: %s)\n", result.Name, result.ConversationID)
+			return printBackfillResult(result.Backfill)
 		},
 	}
 	c.Flags().StringVar(&phone, "phone", "", "phone number in E.164 format (e.g. +13855551234)")
@@ -121,41 +95,9 @@ func printBackfillResult(res history.BackfillResult) error {
 }
 
 func runHistoryBackfill(chat string, requests int, count int64) (history.BackfillResult, error) {
-	layout, err := resolveLayout()
-	if err != nil {
-		return history.BackfillResult{}, err
-	}
-	logger := newLogger()
-	ctx, cancel := signalContext(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-
-	st, err := store.Open(ctx, layout.Database)
-	if err != nil {
-		return history.BackfillResult{}, fmt.Errorf("open store: %w", err)
-	}
-	defer st.Close()
-
-	client, err := gm.Open(layout, logger)
-	if err != nil {
-		return history.BackfillResult{}, err
-	}
-
-	pump := gmsync.New(st, logger)
-	client.Subscribe(pump.Handle)
-
-	if err := client.Connect(); err != nil {
-		return history.BackfillResult{}, fmt.Errorf("connect: %w", err)
-	}
-	defer client.Disconnect()
-
-	if conv, err := client.Underlying().GetConversation(ctx, chat); err == nil && conv != nil {
-		pump.Handle(conv)
-	} else if _, localErr := st.GetConversation(ctx, chat); localErr != nil {
-		if err != nil {
-			return history.BackfillResult{}, fmt.Errorf("get conversation %s: %w", chat, err)
-		}
-		return history.BackfillResult{}, fmt.Errorf("conversation %s is not in the local store; run `gmcli sync` first", chat)
-	}
-
-	return history.Backfill(ctx, st, client, pump, chat, requests, count)
+	var result history.BackfillResult
+	err := callDaemon(ctx, "history.backfill", map[string]any{"conversation_id": chat, "requests": requests, "count": count}, &result)
+	return result, err
 }

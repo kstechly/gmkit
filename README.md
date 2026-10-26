@@ -276,9 +276,9 @@ gmcli --json chats show <conversation-id>
 
 The archive command verifies the phone's status before reporting success and
 updates the local `archived` field. Already-archived threads succeed without
-another write. It uses the existing daemon if a socket is present; restart an
-older daemon with the new binary and `--read-only=false` before archiving.
-With no daemon, it connects for this operation and disconnects afterward.
+another write. It requires the configured daemon; restart an older daemon
+with the new binary and `--read-only=false` before archiving.
+With no daemon socket, it fails immediately.
 A failed readback or timeout is an error, even if Google acknowledged the write;
 the remote change may still have taken effect. No messages are deleted.
 
@@ -294,6 +294,9 @@ the configured daemon, as does `chats verify-archive`. Start `gmcli serve` befor
 live reads. If its socket is unavailable, the read fails immediately: it never
 opens a second paired connection with stale credentials. `--source cached` makes an offline read
 explicit. `chats list` defaults to `--folder inbox`; choose `archive` or `all`.
+Send, reaction, media, history and sync commands use the same configured daemon.
+`sync --follow` subscribes to daemon events. Text sends report the daemon's
+approval status; a pending approval has not sent a message.
 Message search/list/show/context remain local index queries and label themselves
 `source=cached`. A search miss never proves absence from phone history.
 

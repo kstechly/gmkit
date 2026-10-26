@@ -601,6 +601,7 @@ type sendReactParams struct {
 	MessageID string `json:"message_id"`
 	Emoji     string `json:"emoji"`
 	Remove    bool   `json:"remove"`
+	Switch    bool   `json:"switch"`
 }
 
 // handleSendReact adds/removes a reaction. Reactions are low-risk phone
@@ -614,6 +615,9 @@ func (s *Server) handleSendReact(params json.RawMessage) (any, *Error) {
 	if p.MessageID == "" || p.Emoji == "" {
 		return nil, &Error{Code: CodeInvalidParams, Message: "message_id and emoji are required"}
 	}
+	if p.Remove && p.Switch {
+		return nil, &Error{Code: CodeInvalidParams, Message: "remove and switch are mutually exclusive"}
+	}
 	if s.deps.SendMode == SendOff {
 		return nil, &Error{Code: CodeSendsDisabled, Message: "daemon is read-only; restart with `gmcli --read-only=false serve`"}
 	}
@@ -623,6 +627,8 @@ func (s *Server) handleSendReact(params json.RawMessage) (any, *Error) {
 	action := gm.ReactionAdd
 	if p.Remove {
 		action = gm.ReactionRemove
+	} else if p.Switch {
+		action = gm.ReactionSwitch
 	}
 	s.liveMu.Lock()
 	err := s.deps.Client.SendReaction(p.MessageID, p.Emoji, action)
@@ -669,6 +675,11 @@ func (s *Server) handleHistoryBackfill(ctx context.Context, params json.RawMessa
 	// Backfills page through many requests; give them more room than one send.
 	ctx, cancel := context.WithTimeout(ctx, 5*s.deps.LiveTimeout)
 	defer cancel()
+	if conv, err := s.deps.Client.ReadConversation(ctx, p.ConversationID); err == nil {
+		s.deps.Pump.Handle(conv)
+	} else if _, localErr := s.deps.Store.GetConversation(ctx, p.ConversationID); localErr != nil {
+		return nil, &Error{Code: CodeUnavailable, Message: "get conversation: " + err.Error()}
+	}
 	res, err := history.Backfill(ctx, s.deps.Store, s.deps.Client, s.deps.Pump, p.ConversationID, p.Requests, p.Count)
 	if err != nil {
 		return nil, &Error{Code: CodeUnavailable, Message: err.Error()}

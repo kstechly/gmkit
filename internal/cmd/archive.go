@@ -9,9 +9,7 @@ import (
 
 	"github.com/johnlindquist/gmkit/internal/gm"
 	"github.com/johnlindquist/gmkit/internal/output"
-	"github.com/johnlindquist/gmkit/internal/rpc"
 	"github.com/johnlindquist/gmkit/internal/store"
-	gmsync "github.com/johnlindquist/gmkit/internal/sync"
 )
 
 func chatsArchiveCmd() *cobra.Command {
@@ -27,43 +25,11 @@ func chatsArchiveCmd() *cobra.Command {
 			if chatSource != "live" {
 				return fmt.Errorf("archive operates on the phone; --source must be live")
 			}
-			layout, err := resolveLayout()
-			if err != nil {
-				return err
-			}
 			var row store.Conversation
-			if _, err = os.Stat(layout.Socket); err == nil {
-				// A present socket belongs to the session owner. Failure to connect or an
-				// old daemon must surface, never fall back to a competing phone session.
-				client, err := rpc.Dial(layout.Socket)
-				if err != nil {
-					return err
-				}
-				defer client.Close()
-				ctx, cancel := context.WithTimeout(cmd.Context(), 2*readyTimeout)
-				defer cancel()
-				err = client.Call(ctx, "chats.archive", map[string]string{"conversation_id": args[0]}, &row)
-				if err != nil {
-					return fmt.Errorf("archive via daemon: %w", err)
-				}
-			} else if !os.IsNotExist(err) {
-				return err
-			} else {
-				err = runWithConnectedClient(func(ctx context.Context, c *gm.Client, st *store.Store) error {
-					conv, err := c.ArchiveConversation(ctx, args[0])
-					if err != nil {
-						return err
-					}
-					row, _ = gmsync.ConversationRow(conv, "gm")
-					if err = st.UpsertConversation(ctx, row); err != nil {
-						return fmt.Errorf("archived on phone but local save failed: %w", err)
-					}
-					row, err = st.GetConversation(ctx, args[0])
-					return err
-				})
-				if err != nil {
-					return err
-				}
+			ctx, cancel := context.WithTimeout(cmd.Context(), daemonCallTimeout)
+			defer cancel()
+			if err := callDaemon(ctx, "chats.archive", map[string]string{"conversation_id": args[0]}, &row); err != nil {
+				return fmt.Errorf("archive via daemon: %w", err)
 			}
 			var verification *gm.ArchiveVerification
 			var checkErr error

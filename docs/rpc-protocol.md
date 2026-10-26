@@ -53,7 +53,7 @@ Read methods (always available):
 | `media.download`   | `{message_id}`                                                      | `{path, bytes, mime_type}`; downloads+decrypts the attachment into `<store>/media/`. |
 | `alias.set`        | `{target_type, target_id, alias}` — target_type: contact\|conversation | `{set: true}`; local rename, never sent to Google. |
 | `alias.rm`         | `{target_type, target_id}`                                          | `{removed: true}` |
-| `send.react`       | `{message_id, emoji, remove?}`                                      | `{reacted: true}`; add/remove a reaction. Respects send mode but skips the approval queue (low-risk, human-initiated). |
+| `send.react`       | `{message_id, emoji, remove?, switch?}`                             | `{reacted: true}`; add, remove or switch a reaction. `remove` and `switch` are mutually exclusive. Respects send mode but skips the approval queue (low-risk, human-initiated). |
 | `subscribe`        | —                                                                   | `{subscribed: true}`; events start flowing on this connection |
 | `chats.list`       | `{limit?, unread_only?, pinned?}`                                   | array of conversations |
 | `chats.find`       | `{query, limit?}` — person/group/number fragment                    | array of conversations, matched on name, alias, participants, and contacts |
