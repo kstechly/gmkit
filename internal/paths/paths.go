@@ -43,11 +43,6 @@ func Resolve(storeOverride string) (Layout, error) {
 	}, nil
 }
 
-// DaemonLog is where auto-started daemons write their output.
-func (l Layout) DaemonLog() string {
-	return filepath.Join(l.Root, "daemon.log")
-}
-
 // EnsureDirs creates the store root and media subdirectory with 0700.
 func (l Layout) EnsureDirs() error {
 	if err := os.MkdirAll(l.Root, 0o700); err != nil {

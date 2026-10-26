@@ -118,7 +118,7 @@ func serveCmd() *cobra.Command {
 
 			// Accept clients immediately: archive queries work while the
 			// phone connection and initial import proceed in the
-			// background, so auto-started daemons feel instant.
+			// background, so archive queries remain responsive.
 			serveErr := make(chan error, 1)
 			go func() { serveErr <- server.Serve(ctx, ln) }()
 			fmt.Fprintf(os.Stderr, "Daemon ready. RPC socket: %s (send mode: %s). Ctrl-C to stop.\n", sock, mode)

@@ -18,9 +18,8 @@ use crate::rpc::RpcClient;
 
 /// Terminal UI for gmcli — browse, search, and approve Google Messages.
 ///
-/// If no daemon is running, one is started automatically (`gmcli serve
-/// --auto --notify`: approval-gated sends, desktop notifications, exits
-/// when idle). Run `gmcli serve` yourself for an always-on daemon.
+/// Connects only to the configured daemon. Start `gmcli serve` with its
+/// intended credential source before opening the TUI.
 #[derive(Parser, Debug, Clone)]
 #[command(version, about)]
 struct Args {
@@ -32,29 +31,6 @@ struct Args {
     /// Explicit socket path; overrides --store.
     #[arg(long)]
     socket: Option<PathBuf>,
-
-    /// Path to the gmcli binary used for daemon auto-start.
-    #[arg(long, default_value = "gmcli")]
-    gmcli: String,
-
-    /// Auto-start the daemon in offline mode (browse the archive without a
-    /// phone connection).
-    #[arg(long)]
-    offline: bool,
-
-    /// Fail instead of auto-starting a daemon when none is running.
-    #[arg(long)]
-    no_autostart: bool,
-}
-
-/// Everything a (re)connect attempt needs; cheap to clone into tasks.
-#[derive(Clone)]
-struct ConnectCfg {
-    socket: PathBuf,
-    store: Option<PathBuf>,
-    gmcli: String,
-    offline: bool,
-    no_autostart: bool,
 }
 
 fn resolve_socket(args: &Args) -> Result<PathBuf> {
@@ -78,99 +54,22 @@ fn resolve_socket(args: &Args) -> Result<PathBuf> {
         .join("gmcli.sock"))
 }
 
-/// Spawn `gmcli serve --auto --notify` detached and wait for the socket to
-/// come up. `quiet` suppresses stderr chatter (reconnects happen while the
-/// alternate screen is active).
-async fn autostart_daemon(cfg: &ConnectCfg, quiet: bool) -> Result<()> {
-    use std::os::unix::process::CommandExt;
-
-    if !quiet {
-        eprintln!(
-            "gmtui: no daemon on {}; starting `{} serve --auto`...",
-            cfg.socket.display(),
-            cfg.gmcli
-        );
-    }
-    let mut cmd = std::process::Command::new(&cfg.gmcli);
-    if let Some(store) = &cfg.store {
-        cmd.arg("--store").arg(store);
-    }
-    cmd.args(["--log-level", "warn", "serve", "--auto", "--notify"]);
-    if cfg.offline {
-        cmd.arg("--offline");
-    }
-    // Log where the Go-side autostart logs too: <store dir>/daemon.log
-    // (the daemon's store dir is the socket's parent for default layouts).
-    let log = cfg
-        .socket
-        .parent()
-        .map(|dir| dir.join("daemon.log"))
-        .and_then(|p| {
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(p)
-                .ok()
-        });
-    match log {
-        Some(f) => {
-            cmd.stdout(f.try_clone().map_err(|e| eyre!("daemon log: {e}"))?);
-            cmd.stderr(f);
-        }
-        None => {
-            cmd.stdout(std::process::Stdio::null());
-            cmd.stderr(std::process::Stdio::null());
-        }
-    }
-    cmd.stdin(std::process::Stdio::null());
-    // Own process group: Ctrl-C in gmtui must not kill the daemon, and it
-    // must outlive us (it retires itself when idle).
-    cmd.process_group(0);
-    cmd.spawn().map_err(|e| {
-        eyre!(
-            "could not run `{}` (is gmcli installed and on PATH?): {e}",
-            cfg.gmcli
-        )
-    })?;
-
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    while std::time::Instant::now() < deadline {
-        if tokio::net::UnixStream::connect(&cfg.socket).await.is_ok() {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-    Err(eyre!(
-        "daemon did not come up within 30s; check {}/daemon.log (unpaired? run `gmcli auth`)",
-        cfg.socket
-            .parent()
-            .map(|p| Path::display(p).to_string())
-            .unwrap_or_default()
-    ))
-}
-
-/// Dial the daemon (starting one if allowed and needed) and subscribe.
+/// Dial the configured daemon and subscribe without launching a replacement.
 async fn connect_daemon(
-    cfg: &ConnectCfg,
-    quiet: bool,
+    socket: &Path,
 ) -> Result<(RpcClient, mpsc::UnboundedReceiver<ServerEvent>)> {
-    if tokio::net::UnixStream::connect(&cfg.socket).await.is_err() && !cfg.no_autostart {
-        autostart_daemon(cfg, quiet).await?;
-    }
-    let (client, server_events) = RpcClient::connect(&cfg.socket)
-        .await
-        .map_err(|e| eyre!("{e}"))?;
+    let (client, server_events) = RpcClient::connect(socket).await.map_err(|e| eyre!("{e}"))?;
     client.subscribe().await.map_err(|e| eyre!("{e}"))?;
     Ok((client, server_events))
 }
 
 /// Background loop that keeps trying to restore the daemon connection.
 /// Attaches the new event stream and hands the client to the main loop.
-fn spawn_reconnect(cfg: ConnectCfg, tx: mpsc::UnboundedSender<Event>) {
+fn spawn_reconnect(socket: PathBuf, tx: mpsc::UnboundedSender<Event>) {
     tokio::spawn(async move {
         let mut delay = Duration::from_secs(1);
         loop {
-            match connect_daemon(&cfg, true).await {
+            match connect_daemon(&socket).await {
                 Ok((client, server_events)) => {
                     event::attach_server_events(tx.clone(), server_events);
                     let _ = tx.send(Event::Reconnected(client));
@@ -189,17 +88,11 @@ fn spawn_reconnect(cfg: ConnectCfg, tx: mpsc::UnboundedSender<Event>) {
 async fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
-    let cfg = ConnectCfg {
-        socket: resolve_socket(&args)?,
-        store: args.store.clone(),
-        gmcli: args.gmcli.clone(),
-        offline: args.offline,
-        no_autostart: args.no_autostart,
-    };
+    let socket = resolve_socket(&args)?;
 
     // Connect before touching the terminal so first-run connection errors
     // print normally instead of corrupting the screen.
-    let (client, server_events) = connect_daemon(&cfg, false).await?;
+    let (client, server_events) = connect_daemon(&socket).await?;
 
     let (event_tx, app_tx, mut events) = event::start();
     event::attach_server_events(event_tx.clone(), server_events);
@@ -214,7 +107,7 @@ async fn main() -> Result<()> {
     let mut terminal = ratatui::init();
     // Bracketed paste lets cookie blobs land in the pairing overlay intact.
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
-    let result = run(&mut terminal, &mut app, &mut events, &cfg, &event_tx).await;
+    let result = run(&mut terminal, &mut app, &mut events, &socket, &event_tx).await;
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
     ratatui::restore();
     result
@@ -224,7 +117,7 @@ async fn run(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
     events: &mut mpsc::UnboundedReceiver<Event>,
-    cfg: &ConnectCfg,
+    socket: &Path,
     event_tx: &mpsc::UnboundedSender<Event>,
 ) -> Result<()> {
     while !app.should_quit {
@@ -242,11 +135,11 @@ async fn run(
             Some(Event::Term(ev)) => app.handle_term_event(ev),
             Some(Event::App(ev)) => {
                 app.handle_app_event(ev);
-                // The daemon vanished (idle-exit, crash, upgrade): bring it
-                // back without the user doing anything.
+                // The daemon vanished: reconnect to its configured socket
+                // after the service returns.
                 if app.daemon_lost && !app.reconnecting {
                     app.reconnecting = true;
-                    spawn_reconnect(cfg.clone(), event_tx.clone());
+                    spawn_reconnect(socket.to_path_buf(), event_tx.clone());
                 }
             }
             Some(Event::Reconnected(client)) => app.adopt_rpc(client),
@@ -254,4 +147,49 @@ async fn run(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn unavailable_daemon_never_creates_a_replacement() {
+        let directory =
+            std::env::temp_dir().join(format!("gmtui-configured-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let socket = directory.join("gmcli.sock");
+        assert!(connect_daemon(&socket).await.is_err());
+        std::fs::write(&socket, b"stale socket").unwrap();
+        assert!(connect_daemon(&socket).await.is_err());
+        assert!(!directory.join("daemon.log").exists());
+        std::fs::remove_file(socket).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn configured_daemon_receives_subscription() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let socket =
+            std::env::temp_dir().join(format!("gmtui-subscription-{}.sock", std::process::id()));
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let peer = tokio::spawn(async move {
+            let (connection, _) = listener.accept().await.unwrap();
+            let mut connection = BufReader::new(connection);
+            let mut line = String::new();
+            connection.read_line(&mut line).await.unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["method"], "subscribe");
+            let response = serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":{"subscribed":true}});
+            connection
+                .get_mut()
+                .write_all(format!("{response}\n").as_bytes())
+                .await
+                .unwrap();
+        });
+        let result = connect_daemon(&socket).await;
+        assert!(result.is_ok());
+        peer.await.unwrap();
+        std::fs::remove_file(socket).unwrap();
+    }
 }

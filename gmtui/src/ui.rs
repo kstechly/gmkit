@@ -839,7 +839,7 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         )
     } else if app.daemon_lost {
         Span::styled(
-            "○ daemon lost — restarting it now…",
+            "○ daemon lost — waiting for daemon…",
             Style::default().fg(WARN).add_modifier(Modifier::BOLD),
         )
     } else if app.status.connected {

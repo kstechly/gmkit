@@ -4,14 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
 
 	"github.com/johnlindquist/gmkit/internal/coverage"
-	"github.com/johnlindquist/gmkit/internal/daemonctl"
 	"github.com/johnlindquist/gmkit/internal/history"
 	"github.com/johnlindquist/gmkit/internal/paths"
 	"github.com/johnlindquist/gmkit/internal/rpc"
@@ -27,7 +25,6 @@ const mcpLiveTimeout = 5 * time.Minute
 // `gmcli serve` socket — the daemon owns the single libgm session, and its
 // send policy (approval queue by default) is enforced there, not here.
 func mcpCmd() *cobra.Command {
-	var noAutostart bool
 	c := &cobra.Command{
 		Use:   "mcp",
 		Short: "Run an MCP server over stdio for AI agent integrations",
@@ -51,30 +48,16 @@ func mcpCmd() *cobra.Command {
 			}
 			defer st.Close()
 
-			if !noAutostart {
-				// Best-effort: bring the daemon up so the archive syncs and
-				// send/backfill tools work out of the box. Reads work
-				// regardless, so a failure here is a warning, not fatal.
-				// stderr is safe — MCP stdio protocol owns stdout only.
-				if err := daemonctl.EnsureRunning(ctx, layout, daemonctl.Options{LogLevel: "warn"}); err != nil {
-					fmt.Fprintf(os.Stderr, "gmcli mcp: daemon autostart failed (read tools still work): %v\n", err)
-				}
-			}
-
 			srv := newMCPServer(st, layout)
 			return srv.Run(ctx, &mcp.StdioTransport{})
 		},
 	}
-	c.Flags().BoolVar(&noAutostart, "no-autostart", false, "do not auto-start the gmcli daemon")
 	return c
 }
 
 // dialServe connects to the daemon socket for live operations,
-// auto-starting an on-demand daemon when none is running.
+// requiring the configured daemon to own the phone connection.
 func dialServe(layout paths.Layout) (*rpc.Client, error) {
-	if err := daemonctl.EnsureRunning(context.Background(), layout, daemonctl.Options{LogLevel: "warn"}); err != nil {
-		return nil, fmt.Errorf("gmcli daemon is not running and could not be started (%w); start it manually with `gmcli serve`", err)
-	}
 	client, err := rpc.Dial(layout.Socket)
 	if err != nil {
 		return nil, fmt.Errorf("connect to gmcli daemon: %w", err)

@@ -31,8 +31,8 @@ func authGoogleCmd() *cobra.Command {
 			ctx, cancel := signalContext(cmd.Context())
 			defer cancel()
 
-			// A running daemon holds the old session; stop it so the next
-			// client auto-starts a fresh daemon with the new pairing.
+			// A running daemon holds the old session; stop it before pairing.
+			// The configured service must restart to load the new session.
 			stopRunningDaemon(ctx, layout.Socket)
 
 			fmt.Fprintln(os.Stderr, "Starting Google account pairing...")

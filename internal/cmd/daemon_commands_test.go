@@ -180,3 +180,22 @@ func TestSyncFollowSubscribesToDaemon(t *testing.T) {
 		t.Fatalf("missing daemon event: %v", event)
 	}
 }
+
+func TestApprovalsUseConfiguredDaemon(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		args           []string
+		method         string
+		params, result any
+	}{
+		{"list", []string{"approvals", "list"}, "approvals.list", map[string]any{"status": "pending", "limit": 50}, []any{}},
+		{"approve", []string{"approvals", "approve", "fixture"}, "approvals.approve", map[string]any{"approval_id": "fixture"}, map[string]any{"status": "sent"}},
+		{"deny", []string{"approvals", "deny", "fixture", "--reason", "synthetic fixture"}, "approvals.deny", map[string]any{"approval_id": "fixture", "reason": "synthetic fixture"}, map[string]any{"status": "denied"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			commandDaemon(t, dir, tc.method, tc.params, tc.result)
+			runCmd(t, dir, append([]string{"--json", "--read-only=false"}, tc.args...)...)
+		})
+	}
+}

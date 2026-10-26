@@ -30,7 +30,7 @@ func authCmd() *cobra.Command {
 			defer cancel()
 
 			// A running daemon holds the old (dead) session; stop it so the
-			// next client auto-starts a fresh daemon with the new pairing.
+			// configured service must restart to load the new pairing.
 			stopRunningDaemon(ctx, layout.Socket)
 
 			fmt.Fprintln(os.Stderr, "Requesting pairing token from Google...")

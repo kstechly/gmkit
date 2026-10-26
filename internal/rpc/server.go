@@ -47,7 +47,7 @@ type Deps struct {
 	Layout paths.Layout
 	// IdleExit, when > 0, arms the Idle() signal: it fires once the server
 	// has had no client connections for this long (including never having
-	// had one). Used by auto-started daemons to retire themselves.
+	// had one). An explicitly started daemon can retire when unused.
 	IdleExit time.Duration
 }
 

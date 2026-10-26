@@ -141,26 +141,22 @@ the stream as advisory and re-query when reconnecting.
 - The socket accepts connections immediately on startup; the phone
   connection and initial import proceed in the background. Query the archive
   right away and watch `sync.status` / `status` for connection state.
-- `gmcli serve --auto` is the on-demand mode used by gmtui, `gmcli mcp`, and
-  `gmcli approvals`: approval-gated sends (unless `--read-only` is passed
-  explicitly) and `--idle-exit 10m` by default — the daemon exits after ten
-  minutes with no connected clients. Clients spawn it automatically when the
-  socket is dead, so users normally never run `serve` by hand.
-- `--idle-exit <duration>` works on any serve invocation; `0` (the default
-  outside `--auto`) means run forever.
-- Auto-started daemons log to `<store>/daemon.log`.
+- Start `gmcli serve` with the intended credential source, or manage it with
+  a service. CLI, MCP and TUI clients never spawn a replacement daemon.
+- Live operations fail promptly when the configured socket is unavailable.
+  Cached MCP read tools still work directly against the local archive.
+- `--idle-exit <duration>` allows an explicitly started daemon to exit when
+  unused; `0` means run forever. Explicit `serve --auto` defaults to ten
+  minutes and the approval queue unless a read-only policy is supplied.
 
 ## Concurrency notes
 
-- Only run **one** connected session per store: the daemon owns the libgm
-  long-poll. Don't run `gmcli sync`/`send`/`history` CLI commands against the
-  same store while `serve` is up — use the socket instead.
-- `gmcli serve --offline` serves queries and the approval queue without a
-  phone connection (useful for browsing an archive or developing clients).
-  Auto-start falls back to offline mode automatically when the store has no
-  paired session.
-- Two clients racing to auto-start is safe: the second daemon finds the
-  socket live and exits; the winner serves both.
+- Only one daemon owns the paired connection per store. All regular live
+  CLI operations use its socket; no client falls back to another connection.
+- `gmcli serve --offline` serves archive queries and the approval queue without
+  a phone connection. Clients do not start it automatically.
+- A TUI whose daemon disappears reconnects to the same socket after its
+  configured service returns. It never starts an unconfigured replacement.
 
 ## Coverage cutover
 

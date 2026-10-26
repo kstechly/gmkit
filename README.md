@@ -138,11 +138,10 @@ gmcli --json chats list | jq '.data[0].name'
 
 The daemon keeps the session alive, streams events into the archive, and
 exposes a JSON-RPC surface over a unix socket (`<store>/gmcli.sock`,
-documented in [`docs/rpc-protocol.md`](docs/rpc-protocol.md)). **You
-normally never start it yourself**: gmtui, `gmcli mcp`, and `gmcli
-approvals` auto-start it on demand (`serve --auto`) and it exits on its own
-after ten minutes without clients. Run it manually only when you want
-different behavior:
+documented in [`docs/rpc-protocol.md`](docs/rpc-protocol.md)). Start the daemon
+with its intended credentials before opening clients, or manage that command
+with a service. Clients never launch a replacement using their shell's
+credential environment:
 
 ```sh
 gmcli serve                      # always-on, read-only: query surface only
@@ -150,21 +149,17 @@ gmcli --read-only=false serve    # always-on with sends (approval queue)
 gmcli serve --offline            # archive queries without a phone connection
 ```
 
-Auto-started daemons use the approval queue for sends — safe by design,
-since nothing reaches the phone without a human approving — and log to
-`<store>/daemon.log`.
-
 **gmtui** ([`gmtui/`](gmtui/)) is a Rust/ratatui terminal client:
 conversation browser, live message stream, full-text search, compose, and
 the approval queue UI. After pairing once with `gmcli auth`, running `gmtui`
-is all a new user needs — it brings the daemon up itself.
+connects to the configured daemon.
 `cd gmtui && cargo install --path .`
 
 **AI agents** connect through `gmcli mcp`, an MCP (Model Context Protocol)
 stdio server. Read tools (`find_chats`, `search_messages`, `list_chats`,
 `list_messages`, `get_message_context`, `search_contacts`, `get_status`)
 work standalone against the local archive; `send_text` and
-`backfill_history` go through the daemon (auto-started as needed). Search is
+`backfill_history` go through the configured daemon. Search is
 agent-friendly: natural-language queries fall back gracefully from FTS5
 syntax to literal AND then OR term matching, results carry sender and
 conversation names plus ISO timestamps, and `since`/`until` accept ISO dates
