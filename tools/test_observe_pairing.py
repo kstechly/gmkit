@@ -38,6 +38,15 @@ class PairingObservationTest(unittest.TestCase):
             with self.subTest(message=message), self.assertRaises(RuntimeError):
                 self.observe(message)
 
+    def test_colored_failure_rejects_connected_transport(self):
+        # journalctl -o json gives ESC-colored records as byte arrays.
+        for message in (
+            "\x1b[1mFailed to decode incoming RPC message\x1b[0m error=HMAC mismatch",
+            "\x1b[31mERR\x1b[0m cookie input missing required Google cookies: OSID",
+        ):
+            with self.subTest(message=message), self.assertRaises(RuntimeError):
+                self.observe(list(message.encode()))
+
     def test_success_requires_live_read(self):
         events = self.observe("Phone responding again")
         self.assertTrue(any(event["event"] == "live_read" for event in events))
