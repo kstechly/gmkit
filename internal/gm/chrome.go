@@ -65,10 +65,9 @@ func ChromeCookies(ctx context.Context, endpoint string) (map[string]string, err
 			cookies[c.Name] = c.Value
 		}
 	}
-	return ParseGoogleCookieInput(mustCookieJSON(cookies))
-}
-
-func mustCookieJSON(cookies map[string]string) string {
-	b, _ := json.Marshal(cookies) // map[string]string always marshals
-	return string(b)
+	cookies = filterGoogleCookies(cookies)
+	if err := validateGoogleCookies(cookies, requiredRelayGoogleCookies); err != nil {
+		return nil, err
+	}
+	return cookies, nil
 }

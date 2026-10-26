@@ -12,6 +12,10 @@ import (
 )
 
 var requiredGoogleCookies = []string{"SID", "HSID", "OSID", "SSID", "APISID", "SAPISID"}
+
+// OSID identifies the Messages web login during pairing. Already paired relay
+// reads work without it, including while Chrome rotates its host-scoped cookie.
+var requiredRelayGoogleCookies = []string{"SID", "HSID", "SSID", "APISID", "SAPISID"}
 var optionalGoogleCookies = []string{"__Secure-1PSIDTS"}
 var fetchCookieHeaderPattern = regexp.MustCompile(`(?is)(?:^|[,{]\s*)["']?cookie["']?\s*:\s*["']([^"']+)["']`)
 
@@ -32,7 +36,7 @@ func ParseGoogleCookieInput(input string) (map[string]string, error) {
 		cookies = parseCookieHeader(header)
 	}
 	cookies = filterGoogleCookies(cookies)
-	if err := validateGoogleCookies(cookies); err != nil {
+	if err := validateGoogleCookies(cookies, requiredGoogleCookies); err != nil {
 		return nil, err
 	}
 	return cookies, nil
@@ -142,15 +146,15 @@ func filterGoogleCookies(cookies map[string]string) map[string]string {
 	return filtered
 }
 
-func validateGoogleCookies(cookies map[string]string) error {
+func validateGoogleCookies(cookies map[string]string, required []string) error {
 	var missing []string
-	for _, name := range requiredGoogleCookies {
+	for _, name := range required {
 		if cookies[name] == "" {
 			missing = append(missing, name)
 		}
 	}
 	if len(missing) > 0 {
-		if len(missing) == len(requiredGoogleCookies) {
+		if len(missing) == len(required) {
 			return fmt.Errorf("cookie input did not contain the required Google cookies; copy the /web/config request as cURL (bash), Copy as fetch, or copy the Cookie request header")
 		}
 		return fmt.Errorf("cookie input missing required Google cookies: %s", strings.Join(missing, ", "))
