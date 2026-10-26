@@ -51,6 +51,10 @@ def main():
         journal = subprocess.run(["journalctl", "--user", "-u", "gmcli-serve.service", "--since", f"@{started_wall:.6f}", "-o", "json", "--no-pager"], capture_output=True, text=True, check=True)
         for line in journal.stdout.splitlines():
             message = json.loads(line).get("MESSAGE", "")
+            # journald emits records holding control characters (gmcli's
+            # colored console logs) as a list of byte values, not a string.
+            if isinstance(message, list):
+                message = bytes(message).decode(errors="replace")
             if any(failure in message for failure in (
                 "HTTP 401", "HTTP 403", "Google rejected the pairing",
                 "Failed to decode incoming RPC message",
