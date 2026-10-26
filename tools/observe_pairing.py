@@ -31,7 +31,7 @@ def main():
     parser.add_argument("--conversation", required=True)
     parser.add_argument("--duration", type=float, default=86400)
     parser.add_argument("--interval", type=float, default=300)
-    parser.add_argument("--read-interval", type=float, default=3600)
+    parser.add_argument("--read-interval", type=float, default=300)
     args = parser.parse_args()
     chrome = os.environ.get("GMCLI_CHROME_CDP", "http://127.0.0.1:9222")
     started_wall = time.time()
@@ -51,8 +51,12 @@ def main():
         journal = subprocess.run(["journalctl", "--user", "-u", "gmcli-serve.service", "--since", f"@{started_wall:.6f}", "-o", "json", "--no-pager"], capture_output=True, text=True, check=True)
         for line in journal.stdout.splitlines():
             message = json.loads(line).get("MESSAGE", "")
-            if "HTTP 401" in message or "HTTP 403" in message or "Google rejected the pairing" in message:
-                raise RuntimeError("journal recorded an authentication rejection")
+            if any(failure in message for failure in (
+                "HTTP 401", "HTTP 403", "Google rejected the pairing",
+                "Failed to decode incoming RPC message",
+                "cookie input missing required Google cookies",
+            )):
+                raise RuntimeError("journal recorded an authentication or incoming message failure")
         status = rpc("status")
         if status["auth_expired"] or not status["connected"]:
             raise RuntimeError("daemon lost its authenticated connection")

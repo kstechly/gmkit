@@ -489,6 +489,10 @@ func PairGoogle(ctx context.Context, layout paths.Layout, logger zerolog.Logger,
 	if err := cli.FetchConfig(pairCtx); err != nil {
 		return nil, fmt.Errorf("fetch Google Messages config with supplied cookies: %w", err)
 	}
+	// FetchConfig adopts the cookie owner's browser device ID. Sharing that
+	// registration with Chrome makes each pairing replace the other's keys.
+	// Google login credentials are shared; this paired device identity is ours.
+	auth.SessionID = uuid.New()
 	emoji, session, err := cli.StartGaiaPairing(pairCtx, pairCtx)
 	if err != nil {
 		return nil, fmt.Errorf("start Google account pairing: %w", err)
