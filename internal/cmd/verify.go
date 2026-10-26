@@ -13,7 +13,6 @@ import (
 	"github.com/johnlindquist/gmkit/internal/gm"
 	"github.com/johnlindquist/gmkit/internal/output"
 	"github.com/johnlindquist/gmkit/internal/rpc"
-	"github.com/johnlindquist/gmkit/internal/store"
 )
 
 func chatsVerifyCmd() *cobra.Command {
@@ -39,26 +38,16 @@ func verifyArchives(ids []string) (r gm.ArchiveVerification, err error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	if _, e = os.Stat(l.Socket); e == nil {
-		c, e := rpc.Dial(l.Socket)
-		if e != nil {
-			return r, e
-		}
-		defer c.Close()
-		err = c.Call(ctx, "chats.verifyArchive", map[string]any{"conversation_ids": ids}, &r)
-		var re *rpc.Error
-		if errors.As(err, &re) && re.Data != nil {
-			b, _ := json.Marshal(re.Data)
-			_ = json.Unmarshal(b, &r)
-		}
-		return
-	} else if !os.IsNotExist(e) {
+	c, e := rpc.Dial(l.Socket)
+	if e != nil {
 		return r, e
 	}
-	err = runWithConnectedContext(ctx, func(ctx context.Context, c *gm.Client, _ *store.Store) error {
-		var e error
-		r, e = c.VerifyArchives(ctx, ids)
-		return e
-	})
+	defer c.Close()
+	err = c.Call(ctx, "chats.verifyArchive", map[string]any{"conversation_ids": ids}, &r)
+	var re *rpc.Error
+	if errors.As(err, &re) && re.Data != nil {
+		b, _ := json.Marshal(re.Data)
+		_ = json.Unmarshal(b, &r)
+	}
 	return
 }

@@ -289,8 +289,10 @@ No re-pairing is needed.
 
 ## Live reads, cached reads, and coverage
 
-`chats list`, `chats find`, and `chats show` default to `--source live` and use
-the existing daemon when present. `--source cached` makes an offline read
+`chats list`, `chats find`, and `chats show` default to `--source live` and require
+the configured daemon, as does `chats verify-archive`. Start `gmcli serve` before
+live reads. If its socket is unavailable, the read fails immediately: it never
+opens a second paired connection with stale credentials. `--source cached` makes an offline read
 explicit. `chats list` defaults to `--folder inbox`; choose `archive` or `all`.
 Message search/list/show/context remain local index queries and label themselves
 `source=cached`. A search miss never proves absence from phone history.

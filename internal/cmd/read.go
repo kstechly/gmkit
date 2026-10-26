@@ -9,10 +9,8 @@ import (
 	"time"
 
 	"github.com/johnlindquist/gmkit/internal/coverage"
-	"github.com/johnlindquist/gmkit/internal/gm"
 	"github.com/johnlindquist/gmkit/internal/output"
 	"github.com/johnlindquist/gmkit/internal/rpc"
-	"github.com/johnlindquist/gmkit/internal/store"
 	gmsync "github.com/johnlindquist/gmkit/internal/sync"
 )
 
@@ -85,27 +83,17 @@ func scanPhone(o gmsync.ScanOptions) (r gmsync.ScanResult, err error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	if _, e = os.Stat(layout.Socket); e == nil {
-		c, e := rpc.Dial(layout.Socket)
-		if e != nil {
-			return r, e
-		}
-		defer c.Close()
-		err = c.Call(ctx, "chats.scan", o, &r)
-		var re *rpc.Error
-		if errors.As(err, &re) && re.Data != nil {
-			b, _ := json.Marshal(re.Data)
-			_ = json.Unmarshal(b, &r)
-		}
-		return
-	} else if !os.IsNotExist(e) {
+	c, e := rpc.Dial(layout.Socket)
+	if e != nil {
 		return r, e
 	}
-	err = runWithConnectedContext(ctx, func(ctx context.Context, c *gm.Client, st *store.Store) error {
-		var e error
-		r, e = gmsync.Scan(ctx, c, st, o)
-		return e
-	})
+	defer c.Close()
+	err = c.Call(ctx, "chats.scan", o, &r)
+	var re *rpc.Error
+	if errors.As(err, &re) && re.Data != nil {
+		b, _ := json.Marshal(re.Data)
+		_ = json.Unmarshal(b, &r)
+	}
 	return
 }
 func refreshChat(id string, limit int) (r gmsync.ChatRead, err error) {
@@ -119,22 +107,14 @@ func refreshChat(id string, limit int) (r gmsync.ChatRead, err error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	if _, e = os.Stat(layout.Socket); e == nil {
-		c, e := rpc.Dial(layout.Socket)
-		if e != nil {
-			return r, e
-		}
-		defer c.Close()
-		err = c.Call(ctx, "chats.read", map[string]any{"conversation_id": id, "limit": limit}, &r)
-	} else if !os.IsNotExist(e) {
+	// The daemon owns the paired connection and its live credential source.
+	// A missing socket is not permission to reuse session.json in a second client.
+	c, e := rpc.Dial(layout.Socket)
+	if e != nil {
 		return r, e
-	} else {
-		err = runWithConnectedClient(func(ctx context.Context, c *gm.Client, st *store.Store) error {
-			var e error
-			r, e = gmsync.ReadChat(ctx, c, st, id, limit)
-			return e
-		})
 	}
+	defer c.Close()
+	err = c.Call(ctx, "chats.read", map[string]any{"conversation_id": id, "limit": limit}, &r)
 	readCoverage = &r.Coverage
 	return r, err
 }
