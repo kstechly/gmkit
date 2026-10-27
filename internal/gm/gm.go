@@ -41,6 +41,19 @@ const PairTimeout = 5 * time.Minute
 // on some devices.
 const sendMetadataTimeout = 10 * time.Second
 
+// phonePingInterval spaces libgm's unprompted NotifyDittoActivity pings to the
+// phone. Each one makes Google Messages take its ditto wake lock and start its
+// foreground service for about a minute, so libgm's raw 1-minute default kept
+// her phone awake around the clock under the always-on serve unit (graph
+// nb9cc95e45a). Requests that stall still ping at once through libgm's short
+// circuit, and receiving and token refresh run on the long poll, not on pings.
+// SPEC-AMBIGUITY: (2026-10-27 04:50) Fix asked for "the cleanest change" to stop the relay keeping Messages awake, but this could mean
+// 1. no unprompted pings at all (libgm has no off switch; a huge interval fakes one)
+// 2. the interval mautrix's own bridge ships with libgm, 20m
+// 3. some other number
+// Choice defaulted to: 2 because it is the value the library's maintainers run in production, keeping phone-offline detection while cutting the wakes 20x
+const phonePingInterval = 20 * time.Minute
+
 // EventHandler is invoked for each event delivered by libgm. The argument
 // type is one of the concrete types in pkg/libgm/events or pkg/libgm/gmproto.
 type EventHandler func(evt any)
@@ -75,6 +88,7 @@ func Open(layout paths.Layout, logger zerolog.Logger) (*Client, error) {
 		logger: logger,
 	}
 	c.libgm = libgm.NewClient(auth, nil, logger)
+	c.libgm.SetPingInterval(phonePingInterval)
 	c.libgm.SetEventHandler(c.dispatch)
 	return c, nil
 }
