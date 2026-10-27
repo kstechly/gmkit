@@ -8,7 +8,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/johnlindquist/gmkit/internal/daemonctl"
 	"github.com/johnlindquist/gmkit/internal/output"
 	"github.com/johnlindquist/gmkit/internal/rpc"
 	"github.com/johnlindquist/gmkit/internal/store"
@@ -35,13 +34,10 @@ func approvalsCmd() *cobra.Command {
 }
 
 // dialDaemon connects to the serve socket for the resolved store layout,
-// auto-starting an on-demand daemon when none is running.
+// requiring the configured daemon to own the phone connection.
 func dialDaemon() (*rpc.Client, error) {
 	layout, err := resolveLayout()
 	if err != nil {
-		return nil, err
-	}
-	if err := daemonctl.EnsureRunning(context.Background(), layout, daemonctl.Options{LogLevel: flags.logLevel}); err != nil {
 		return nil, err
 	}
 	return rpc.Dial(layout.Socket)

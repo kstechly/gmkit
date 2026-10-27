@@ -26,21 +26,19 @@ gmtui          # that's it — pairing happens in the TUI too (press p)
 
 On first run (or when Google expires the pairing), press `p`. Google
 removed QR pairing from current Messages builds, so pairing uses your
-Google account: sign in to messages.google.com in a browser, copy any
-request as cURL from DevTools → Network, paste it into the overlay, and tap
-the emoji Google shows on your phone. The daemon restarts itself with the
+Google account: sign in to messages.google.com in a Chrome profile, enter
+that profile's `Cookies` file in the overlay (empty re-pairs the current
+profile), and tap the emoji Google shows on your phone. gmcli reads the
+profile's current cookies on every request and never stores a copy. The daemon restarts itself with the
 new session and everything syncs. (Older Messages builds can still use the
 QR flow via ctrl-r; `gmcli auth google` in a terminal also works.)
 
-If no daemon is listening, gmtui starts one automatically (`gmcli serve
---auto`: sends gated by the approval queue, exits ~10 minutes after the last
-client disconnects). The `gmcli` binary must be on your PATH (or pass
-`--gmcli <path>`). For an always-on daemon, run `gmcli serve` yourself —
-gmtui will use it.
+Start `gmcli serve` with its intended credentials, or manage it as a service,
+before opening the TUI. If the configured socket is unavailable, gmtui fails
+promptly without starting a replacement daemon.
 
-Flags: `--store <dir>` / `--socket <path>` to point at a non-default store,
-`--offline` to browse an archive without a phone connection,
-`--no-autostart` to fail instead of spawning a daemon.
+Flags: `--store <dir>` / `--socket <path>` select the configured daemon.
+For an offline archive, start `gmcli serve --offline` explicitly.
 
 `gmtui` finds the daemon socket the same way gmcli does
 (`$XDG_STATE_HOME/gmcli/gmcli.sock`, falling back to
@@ -63,11 +61,10 @@ anywhere.
 
 The status bar always tells you the truth and gmtui fixes problems itself:
 daemon status is re-polled every ~10s, and if the daemon exits or crashes,
-gmtui restarts it and reconnects automatically (with backoff), refetching
+gmtui reconnects after its configured service returns (with backoff), refetching
 everything once it's back. `● connected` / `◌ offline archive` /
 `○ phone relay down — auto-retrying` (with what to check) /
-`○ daemon lost — restarting it now…` are the four states; none of them
-need manual intervention. Press `r` in browse mode to force a refresh.
+`○ daemon lost — waiting for daemon…` are the four states. Press `r` in browse mode to force a refresh.
 
 ## Fresh data & notifications
 
@@ -75,9 +72,7 @@ On connect, gmtui asks the daemon to pull the latest messages from your
 phone (`sync.refresh`) and refetches when the import lands — so the launch
 screen reflects texts from a minute ago, not from the last time a daemon
 ran. Incoming messages ring the terminal bell and flash in the status bar;
-daemons auto-started by gmtui also run with `--notify`, which posts desktop
-notifications (macOS/Linux) for incoming texts while the daemon is alive.
-For always-on notifications, run `gmcli --read-only=false serve --notify`
+for desktop notifications, run `gmcli --read-only=false serve --notify`
 under a supervisor.
 
 ## Keys

@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-`gmkit` (module `github.com/johnlindquist/gmkit`) is a Go 1.24 CLI for Google Messages. `cmd/gmcli/main.go` is the entrypoint; it wires into the Cobra command tree in `internal/cmd/`. Keep user-facing verbs and flags in `internal/cmd/`, and reusable implementation in the other `internal/` packages:
+`gmkit` (module `github.com/johnlindquist/gmkit`) is a Go 1.26 CLI for Google Messages. `cmd/gmcli/main.go` is the entrypoint; it wires into the Cobra command tree in `internal/cmd/`. Keep user-facing verbs and flags in `internal/cmd/`, and reusable implementation in the other `internal/` packages:
 
 - `internal/gm/`: session, pairing, sync events, send/react, media.
 - `internal/store/`: SQLite schema, queries, aliases, approvals, message/contact persistence.
@@ -61,7 +61,7 @@ To send a text:
 ## Daemon, MCP, and approvals
 
 - `./gmcli serve` runs the long-lived daemon (unix-socket JSON-RPC + event stream, `docs/rpc-protocol.md`). `--offline` serves the archive without a phone; `--read-only=false` enables the approval queue; `--read-only=false --sends direct` sends immediately with an audit row.
-- gmtui, `gmcli mcp`, and `gmcli approvals` auto-start the daemon (`serve --auto`: approval-gated sends, idle-exit 10m, logs to `<store>/daemon.log`) — users don't manage daemon lifecycle. A store without a session auto-starts offline.
+- Start the daemon with its intended credentials or manage it as a service. gmtui, MCP live tools and CLI commands require that configured socket; they never spawn another daemon or open a second phone connection. Cached MCP tools still work directly against the local archive.
 - `./gmcli mcp` is the MCP stdio server for agent runtimes. Read tools hit SQLite directly; `send_text`/`backfill_history` go through the daemon. `send_text` returning `status: "pending"` means queued for human approval, NOT sent — report it that way.
 - To resolve a person to a conversation, prefer `./gmcli chats find "<name-or-number>"` (or the `find_chats` MCP tool) over manual contacts/chats cross-referencing.
 - Chat/message query JSON uses `{coverage,data}`; archive receipts use `{conversation,verification_scope}`. Use `chats verify-archive ID...` to compare individual status with complete folder scans.

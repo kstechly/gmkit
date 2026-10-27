@@ -17,7 +17,7 @@ type fakeArchiveAPI struct {
 	request           *gmproto.UpdateConversationRequest
 }
 
-func (f *fakeArchiveAPI) GetConversation(string) (*gmproto.Conversation, error) {
+func (f *fakeArchiveAPI) GetConversation(context.Context, string) (*gmproto.Conversation, error) {
 	f.reads++
 	if f.readErr != nil {
 		return nil, f.readErr
@@ -27,7 +27,7 @@ func (f *fakeArchiveAPI) GetConversation(string) (*gmproto.Conversation, error) 
 	}
 	return f.after, nil
 }
-func (f *fakeArchiveAPI) UpdateConversation(r *gmproto.UpdateConversationRequest) (*gmproto.UpdateConversationResponse, error) {
+func (f *fakeArchiveAPI) UpdateConversation(_ context.Context, r *gmproto.UpdateConversationRequest) (*gmproto.UpdateConversationResponse, error) {
 	f.writes++
 	f.request = r
 	return &gmproto.UpdateConversationResponse{Success: f.success}, f.writeErr
@@ -82,11 +82,11 @@ func TestArchiveCanceledBeforeWrite(t *testing.T) {
 	}
 }
 func TestReadinessUsesPhoneSettings(t *testing.T) {
-	c := &Client{settings: &gmproto.Settings{}}
+	c := &Client{settings: &gmproto.Settings{}, facts: newVerdictFacts(time.Now())}
 	if err := c.WaitForReady(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	c = &Client{}
+	c = &Client{facts: newVerdictFacts(time.Now())}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
 	if err := c.WaitForReady(ctx); !errors.Is(err, context.DeadlineExceeded) {
@@ -99,9 +99,13 @@ type stalledArchiveAPI struct {
 	entered, release chan struct{}
 }
 
-func (f *stalledArchiveAPI) GetConversation(string) (*gmproto.Conversation, error) {
+func (f *stalledArchiveAPI) GetConversation(ctx context.Context, _ string) (*gmproto.Conversation, error) {
 	close(f.entered)
-	<-f.release
+	select {
+	case <-f.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	return &gmproto.Conversation{ConversationID: "c", Status: gmproto.ConversationStatus_ACTIVE}, nil
 }
 func TestArchiveTimeoutCannotStartLateWrite(t *testing.T) {
@@ -122,7 +126,7 @@ func TestArchiveTimeoutCannotStartLateWrite(t *testing.T) {
 	close(api.release)
 }
 func TestReadinessAcceptsSettingsAfterWaitStarts(t *testing.T) {
-	c := &Client{}
+	c := &Client{facts: newVerdictFacts(time.Now())}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	done := make(chan error, 1)
@@ -135,7 +139,7 @@ func TestReadinessAcceptsSettingsAfterWaitStarts(t *testing.T) {
 
 type delayedArchiveAPI struct{ fakeArchiveAPI }
 
-func (f *delayedArchiveAPI) GetConversation(id string) (*gmproto.Conversation, error) {
+func (f *delayedArchiveAPI) GetConversation(_ context.Context, id string) (*gmproto.Conversation, error) {
 	f.reads++
 	status := gmproto.ConversationStatus_ACTIVE
 	if f.reads >= 4 {

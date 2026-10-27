@@ -62,7 +62,7 @@ roughly every 14 days of inactivity (Google's policy, not ours).
 
 ## Install this fork
 
-Build the archive-capable CLI from this fork with Go 1.25 or newer:
+Build the archive-capable CLI from this fork with Go 1.26 or newer:
 
 ```sh
 git clone https://github.com/kstechly/gmkit.git
@@ -138,11 +138,10 @@ gmcli --json chats list | jq '.data[0].name'
 
 The daemon keeps the session alive, streams events into the archive, and
 exposes a JSON-RPC surface over a unix socket (`<store>/gmcli.sock`,
-documented in [`docs/rpc-protocol.md`](docs/rpc-protocol.md)). **You
-normally never start it yourself**: gmtui, `gmcli mcp`, and `gmcli
-approvals` auto-start it on demand (`serve --auto`) and it exits on its own
-after ten minutes without clients. Run it manually only when you want
-different behavior:
+documented in [`docs/rpc-protocol.md`](docs/rpc-protocol.md)). Start the daemon
+with its intended credentials before opening clients, or manage that command
+with a service. Clients never launch a replacement using their shell's
+credential environment:
 
 ```sh
 gmcli serve                      # always-on, read-only: query surface only
@@ -150,21 +149,17 @@ gmcli --read-only=false serve    # always-on with sends (approval queue)
 gmcli serve --offline            # archive queries without a phone connection
 ```
 
-Auto-started daemons use the approval queue for sends — safe by design,
-since nothing reaches the phone without a human approving — and log to
-`<store>/daemon.log`.
-
 **gmtui** ([`gmtui/`](gmtui/)) is a Rust/ratatui terminal client:
 conversation browser, live message stream, full-text search, compose, and
 the approval queue UI. After pairing once with `gmcli auth`, running `gmtui`
-is all a new user needs — it brings the daemon up itself.
+connects to the configured daemon.
 `cd gmtui && cargo install --path .`
 
 **AI agents** connect through `gmcli mcp`, an MCP (Model Context Protocol)
 stdio server. Read tools (`find_chats`, `search_messages`, `list_chats`,
 `list_messages`, `get_message_context`, `search_contacts`, `get_status`)
 work standalone against the local archive; `send_text` and
-`backfill_history` go through the daemon (auto-started as needed). Search is
+`backfill_history` go through the configured daemon. Search is
 agent-friendly: natural-language queries fall back gracefully from FTS5
 syntax to literal AND then OR term matching, results carry sender and
 conversation names plus ISO timestamps, and `since`/`until` accept ISO dates
@@ -276,9 +271,9 @@ gmcli --json chats show <conversation-id>
 
 The archive command verifies the phone's status before reporting success and
 updates the local `archived` field. Already-archived threads succeed without
-another write. It uses the existing daemon if a socket is present; restart an
-older daemon with the new binary and `--read-only=false` before archiving.
-With no daemon, it connects for this operation and disconnects afterward.
+another write. It requires the configured daemon; restart an older daemon
+with the new binary and `--read-only=false` before archiving.
+With no daemon socket, it fails immediately.
 A failed readback or timeout is an error, even if Google acknowledged the write;
 the remote change may still have taken effect. No messages are deleted.
 
@@ -289,9 +284,14 @@ No re-pairing is needed.
 
 ## Live reads, cached reads, and coverage
 
-`chats list`, `chats find`, and `chats show` default to `--source live` and use
-the existing daemon when present. `--source cached` makes an offline read
+`chats list`, `chats find`, and `chats show` default to `--source live` and require
+the configured daemon, as does `chats verify-archive`. Start `gmcli serve` before
+live reads. If its socket is unavailable, the read fails immediately: it never
+opens a second paired connection with stale credentials. `--source cached` makes an offline read
 explicit. `chats list` defaults to `--folder inbox`; choose `archive` or `all`.
+Send, reaction, media, history and sync commands use the same configured daemon.
+`sync --follow` subscribes to daemon events. Text sends report the daemon's
+approval status; a pending approval has not sent a message.
 Message search/list/show/context remain local index queries and label themselves
 `source=cached`. A search miss never proves absence from phone history.
 
@@ -328,3 +328,24 @@ can produce verified success. This verifies state at read time; new activity can
 subsequently move a thread back to the inbox.
 
 Protocol investigation and live evidence: [folder pagination](docs/research/folder-pagination.md).
+
+### The pairing record and its verdict
+
+`session.json` is the one pairing record: libgm's keys and relay token, plus, for a Google-account pairing, `cookie_file`, the Chrome profile `Cookies` database of the paired account. Pair with `gmcli auth google --cookie-file /absolute/path/to/Default/Cookies` (the daemon runs the flow; later re-pairs default to the recorded file). The record never holds a cookie: every relay/config request reads the profile's current cookies through `uv` and `browser-cookie3==0.20.1` (SQLite snapshot, OS keyring decryption). The explicit file matters: browser-level CDP cookie reads follow Chrome's last-used profile and can silently send another account's credentials. The reader never opens a browser or changes focus and works with Chrome closed; logs never print cookies. Provision its environment once with `uv run --no-project --with browser-cookie3==0.20.1 python -c 'import browser_cookie3'`.
+
+The daemon keeps one verdict on the pairing, recomputed from what Google and the phone answer, and reports it in `status.verdict` (`state`, `since`, `reason`, `evidence`, `decrypt_failures`) and as `sync.status {state: "verdict"}`. Every change is kept in the `verdict_log` table.
+
+| state | means |
+| --- | --- |
+| `connecting` | nothing has answered since the daemon started |
+| `live` | the relay accepts the pairing and phone payloads decrypt |
+| `rejected` | the relay last answered 401/403 (evidence: endpoint, status, Google's reason, a fingerprint of the cookies sent) |
+| `source_unreadable` | the profile's cookies could not be read (keyring locked, profile missing or signed out); nothing was sent |
+| `logged_out` | only a re-pair helps: the phone said so, or the relay rejected two different sets of the account's cookies in a row |
+| `undecryptable` | the relay accepts the pairing but the phone's payloads stopped decrypting |
+
+Phone-touching methods refuse under `rejected`, `source_unreadable` and `logged_out`, naming the state. While the relay connection is down and the verdict is not `logged_out`, the daemon reconnects every 2 minutes with the profile's current cookies; nothing else restarts or latches it.
+
+Google pairing creates a separate device identity for gmcli after loading browser configuration. Reusing Chrome's device identity with separate encryption keys causes HMAC failures when Messages for Web becomes active. Cookies can follow Chrome while the paired device identity and keys remain gmcli's own.
+
+This deliberately depends on that browser remaining signed in. A `logged_out` pairing needs a new Google-account emoji handshake (`gmcli auth google`). Live chat reads fetch only the requested recent sample, not complete history.

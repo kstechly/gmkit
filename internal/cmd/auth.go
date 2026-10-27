@@ -30,7 +30,7 @@ func authCmd() *cobra.Command {
 			defer cancel()
 
 			// A running daemon holds the old (dead) session; stop it so the
-			// next client auto-starts a fresh daemon with the new pairing.
+			// configured service must restart to load the new pairing.
 			stopRunningDaemon(ctx, layout.Socket)
 
 			fmt.Fprintln(os.Stderr, "Requesting pairing token from Google...")
@@ -48,7 +48,7 @@ func authCmd() *cobra.Command {
 				return fmt.Errorf("pair: %w", err)
 			}
 			fmt.Fprintf(os.Stderr, "Paired. phone_id=%s session=%s\n", res.PhoneID, res.SessionPath)
-			fmt.Fprintln(os.Stderr, "All set — launch gmtui (or any gmcli command); the daemon starts itself with the new session.")
+			fmt.Fprintln(os.Stderr, "All set — start `gmcli serve` (or restart its service) to load the new session, then launch gmtui.")
 			return nil
 		},
 	}
@@ -67,7 +67,7 @@ func stopRunningDaemon(ctx context.Context, socket string) {
 	defer cancel()
 	_ = client.Call(callCtx, "daemon.shutdown", nil, nil)
 	_ = client.Close()
-	fmt.Fprintln(os.Stderr, "Stopped the running gmkit daemon (it restarts on next use with the new session).")
+	fmt.Fprintln(os.Stderr, "Stopped the running gmkit daemon; start `gmcli serve` again (or restart its service) after pairing.")
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if c, err := rpc.Dial(socket); err != nil {

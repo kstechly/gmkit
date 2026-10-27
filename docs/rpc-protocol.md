@@ -46,14 +46,14 @@ Read methods (always available):
 | Method             | Params                                                              | Result |
 | ------------------ | ------------------------------------------------------------------- | ------ |
 | `ping`             | —                                                                   | `{pong, version, schema_version}` |
-| `status`           | —                                                                   | `{coverage, connected, offline, auth_expired, send_mode, pending_approvals, conversations, messages, last_event_ms, last_connect_ms, updated_at_ms}` — `offline` = deliberately no phone connection; `auth_expired` = phone reports the pairing logged out (`gmcli auth` required; daemon keeps serving the archive) |
+| `status`           | —                                                                   | `{coverage, connected, offline, verdict, send_mode, pending_approvals, conversations, messages, last_event_ms, last_connect_ms, updated_at_ms}` — `offline` = deliberately no phone connection (`verdict` null); `verdict` = the pairing verdict below |
 | `daemon.shutdown`  | —                                                                   | `{shutting_down: true}`; the daemon exits. Used by `gmcli auth` to hand over a fresh session — on-demand clients spawn a replacement. |
 | `auth.pair`        | —                                                                   | `{started}`; legacy QR pairing in the daemon. Emits `pair.qr {url}`, then `pair.success`/`pair.error`. Google removed the QR scanner from current Messages builds — prefer `auth.pair.google`. |
-| `auth.pair.google` | `{cookies_input}` — raw Cookie header / Copy-as-cURL / fetch / JSON | `{started}`; Google-account pairing. Emits `pair.emoji {emoji}` (tap it on the phone), then `pair.success {phone_id}` / `pair.error {error}`. On success the daemon restarts to load the new session. |
+| `auth.pair.google` | `{cookie_file?}` — absolute path of the Chrome profile's `Cookies` database; default: the current pairing's | `{started, cookie_file}`; Google-account pairing as that profile's account. Emits `pair.emoji {emoji}` (tap it on the phone), then `pair.success {phone_id}` / `pair.error {error}`. On success the daemon restarts to load the new session. |
 | `media.download`   | `{message_id}`                                                      | `{path, bytes, mime_type}`; downloads+decrypts the attachment into `<store>/media/`. |
 | `alias.set`        | `{target_type, target_id, alias}` — target_type: contact\|conversation | `{set: true}`; local rename, never sent to Google. |
 | `alias.rm`         | `{target_type, target_id}`                                          | `{removed: true}` |
-| `send.react`       | `{message_id, emoji, remove?}`                                      | `{reacted: true}`; add/remove a reaction. Respects send mode but skips the approval queue (low-risk, human-initiated). |
+| `send.react`       | `{message_id, emoji, remove?, switch?}`                             | `{reacted: true}`; add, remove or switch a reaction. `remove` and `switch` are mutually exclusive. Respects send mode but skips the approval queue (low-risk, human-initiated). |
 | `subscribe`        | —                                                                   | `{subscribed: true}`; events start flowing on this connection |
 | `chats.list`       | `{limit?, unread_only?, pinned?}`                                   | array of conversations |
 | `chats.find`       | `{query, limit?}` — person/group/number fragment                    | array of conversations, matched on name, alias, participants, and contacts |
@@ -131,7 +131,7 @@ cleanly with code 1003.
 | `conversation.updated` | `{conversation}`                                 |
 | `approval.requested`   | approval row                                     |
 | `approval.resolved`    | approval row                                     |
-| `sync.status`          | `{state}`: `ready`, `refreshed` (bulk import finished — refetch), `refresh_failed`, `phone_not_responding`, `phone_responding`, `listen_temporary_error`, `listen_recovered`, `logged_out` |
+| `sync.status`          | `{state}`: `ready`, `refreshed` (bulk import finished — refetch), `refresh_failed`, `phone_not_responding`, `phone_responding`, `listen_temporary_error`, `listen_recovered`, `verdict` (with `{verdict}`: the pairing verdict changed) |
 
 Slow consumers may have events dropped rather than stall the daemon; treat
 the stream as advisory and re-query when reconnecting.
@@ -141,26 +141,22 @@ the stream as advisory and re-query when reconnecting.
 - The socket accepts connections immediately on startup; the phone
   connection and initial import proceed in the background. Query the archive
   right away and watch `sync.status` / `status` for connection state.
-- `gmcli serve --auto` is the on-demand mode used by gmtui, `gmcli mcp`, and
-  `gmcli approvals`: approval-gated sends (unless `--read-only` is passed
-  explicitly) and `--idle-exit 10m` by default — the daemon exits after ten
-  minutes with no connected clients. Clients spawn it automatically when the
-  socket is dead, so users normally never run `serve` by hand.
-- `--idle-exit <duration>` works on any serve invocation; `0` (the default
-  outside `--auto`) means run forever.
-- Auto-started daemons log to `<store>/daemon.log`.
+- Start `gmcli serve` with the intended credential source, or manage it with
+  a service. CLI, MCP and TUI clients never spawn a replacement daemon.
+- Live operations fail promptly when the configured socket is unavailable.
+  Cached MCP read tools still work directly against the local archive.
+- `--idle-exit <duration>` allows an explicitly started daemon to exit when
+  unused; `0` means run forever. Explicit `serve --auto` defaults to ten
+  minutes and the approval queue unless a read-only policy is supplied.
 
 ## Concurrency notes
 
-- Only run **one** connected session per store: the daemon owns the libgm
-  long-poll. Don't run `gmcli sync`/`send`/`history` CLI commands against the
-  same store while `serve` is up — use the socket instead.
-- `gmcli serve --offline` serves queries and the approval queue without a
-  phone connection (useful for browsing an archive or developing clients).
-  Auto-start falls back to offline mode automatically when the store has no
-  paired session.
-- Two clients racing to auto-start is safe: the second daemon finds the
-  socket live and exits; the winner serves both.
+- Only one daemon owns the paired connection per store. All regular live
+  CLI operations use its socket; no client falls back to another connection.
+- `gmcli serve --offline` serves archive queries and the approval queue without
+  a phone connection. Clients do not start it automatically.
+- A TUI whose daemon disappears reconnects to the same socket after its
+  configured service returns. It never starts an unconfigured replacement.
 
 ## Coverage cutover
 

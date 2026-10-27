@@ -1,7 +1,7 @@
 package store
 
 // schemaVersion is the migration target. Bump when migrations[] grows.
-const schemaVersion = 4
+const schemaVersion = 5
 
 // migrations are applied in order. Each runs in its own transaction; the
 // store records the highest applied version in the schema_version table.
@@ -158,4 +158,9 @@ var migrations = []string{
  CREATE TABLE folder_members (folder TEXT NOT NULL, conversation_id TEXT NOT NULL,
  PRIMARY KEY(folder, conversation_id)) STRICT;
  INSERT INTO schema_version (version) VALUES (4);`,
+	// v5: every change of the daemon's pairing verdict, with the evidence it
+	// rested on (gm.Verdict as JSON). Kept: rows come only on transitions.
+	`CREATE TABLE verdict_log (at INTEGER NOT NULL, state TEXT NOT NULL, verdict TEXT NOT NULL) STRICT;
+ CREATE INDEX ix_verdict_log_at ON verdict_log (at);
+ INSERT INTO schema_version (version) VALUES (5);`,
 }

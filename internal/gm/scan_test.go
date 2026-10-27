@@ -14,7 +14,7 @@ type scanFake struct {
 	err   error
 }
 
-func (f *scanFake) ListConversationsWithCursor(n int, folder gmproto.ListConversationsRequest_Folder, c *gmproto.Cursor) (*gmproto.ListConversationsResponse, error) {
+func (f *scanFake) ListConversations(_ context.Context, req *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error) {
 	if f.err != nil {
 		return nil, f.err
 	}

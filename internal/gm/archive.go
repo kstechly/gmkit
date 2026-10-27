@@ -15,8 +15,8 @@ import (
 const actionArchive gmproto.ConversationActionStatus = 4
 
 type archiveAPI interface {
-	GetConversation(string) (*gmproto.Conversation, error)
-	UpdateConversation(*gmproto.UpdateConversationRequest) (*gmproto.UpdateConversationResponse, error)
+	GetConversation(context.Context, string) (*gmproto.Conversation, error)
+	UpdateConversation(context.Context, *gmproto.UpdateConversationRequest) (*gmproto.UpdateConversationResponse, error)
 }
 
 // ArchiveConversation archives a phone conversation and verifies its status
@@ -35,25 +35,11 @@ func archiveConversation(ctx context.Context, api archiveAPI, id string) (*gmpro
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	type result struct {
-		conv *gmproto.Conversation
-		err  error
-	}
-	done := make(chan result, 1)
-	// libgm's request methods have no context or hard timeout. Bound the caller's
-	// wait, and check cancellation before issuing a mutation. A timed-out write
-	// may still take effect; never report it as verified success.
-	go func() { conv, err := archiveAndReadBack(ctx, api, id); done <- result{conv, err} }()
-	select {
-	case <-ctx.Done():
-		return nil, fmt.Errorf("archive %s not verified; remote state may have changed: %w", id, ctx.Err())
-	case r := <-done:
-		return r.conv, r.err
-	}
+	return archiveAndReadBack(ctx, api, id)
 }
 
 func archiveAndReadBack(ctx context.Context, api archiveAPI, id string) (*gmproto.Conversation, error) {
-	conv, err := api.GetConversation(id)
+	conv, err := api.GetConversation(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("read conversation: %w", err)
 	}
@@ -70,7 +56,7 @@ func archiveAndReadBack(ctx context.Context, api archiveAPI, id string) (*gmprot
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	resp, err := api.UpdateConversation(&gmproto.UpdateConversationRequest{ConversationID: id, Action: actionArchive})
+	resp, err := api.UpdateConversation(ctx, &gmproto.UpdateConversationRequest{ConversationID: id, Action: actionArchive})
 	if err != nil {
 		return nil, fmt.Errorf("archive request: %w", err)
 	}
@@ -85,7 +71,7 @@ func archiveAndReadBack(ctx context.Context, api archiveAPI, id string) (*gmprot
 	verifyCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	for {
-		conv, err = api.GetConversation(id)
+		conv, err = api.GetConversation(ctx, id)
 		if err != nil {
 			return nil, fmt.Errorf("archive acknowledged but readback failed: %w", err)
 		}

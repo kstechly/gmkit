@@ -33,7 +33,7 @@ func TestOpenMigratesFreshDB(t *testing.T) {
 	if state.LastEventTime.UnixMilli() != 0 || state.LastConnectTime.UnixMilli() != 0 {
 		t.Fatalf("expected unset (epoch) sync timestamps, got %+v", state)
 	}
-	if v, err := st.SchemaVersion(ctx); err != nil || v != 4 {
+	if v, err := st.SchemaVersion(ctx); err != nil || v != 5 {
 		t.Fatalf("schema version: got %d err=%v, want current schema", v, err)
 	}
 }
@@ -213,5 +213,23 @@ func TestTouchSyncUpdatesActivityOnly(t *testing.T) {
 	}
 	if !after.LastConnectTime.Equal(connectTime) {
 		t.Fatalf("last_connect_ts changed: %v", after.LastConnectTime)
+	}
+}
+
+func TestVerdictLogKeepsEveryChangeNewestFirst(t *testing.T) {
+	st := openTempStore(t)
+	ctx := context.Background()
+	t0 := time.UnixMilli(1_000_000)
+	for i, state := range []string{"connecting", "live", "rejected", "logged_out"} {
+		if err := st.AppendVerdict(ctx, t0.Add(time.Duration(i)*time.Second), state, []byte(`{"state":"`+state+`"}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := st.VerdictLog(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].State != "logged_out" || rows[1].State != "rejected" || !rows[0].At.Equal(t0.Add(3*time.Second)) {
+		t.Fatalf("%+v", rows)
 	}
 }

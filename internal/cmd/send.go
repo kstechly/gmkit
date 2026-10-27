@@ -8,15 +8,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/johnlindquist/gmkit/internal/gm"
 	"github.com/johnlindquist/gmkit/internal/output"
 	"github.com/johnlindquist/gmkit/internal/store"
-	gmsync "github.com/johnlindquist/gmkit/internal/sync"
 )
 
-// readyTimeout is how long send/react wait for the libgm session to come up
-// before giving up. Readiness requires a phone settings response.
-const readyTimeout = 30 * time.Second
+// daemonCallTimeout bounds one CLI request to the configured phone connection.
+const daemonCallTimeout = time.Minute
 
 func sendCmd() *cobra.Command {
 	c := &cobra.Command{
@@ -45,24 +42,23 @@ func sendTextCmd() *cobra.Command {
 			if err := requireWritable(); err != nil {
 				return err
 			}
-			return runWithConnectedClient(func(ctx context.Context, c *gm.Client, _ *store.Store) error {
-				res, err := c.SendText(ctx, to, message, replyTo)
-				if err != nil {
-					return err
-				}
-
-				if flags.jsonOut {
-					return output.JSON(os.Stdout, map[string]any{
-						"sent":            true,
-						"conversation_id": res.ConversationID,
-						"message_id":      res.MessageID,
-						"tmp_id":          res.TmpID,
-					})
-				}
-				fmt.Fprintf(os.Stderr, "Sent to %s (message_id %s, tmp_id %s)\n",
-					res.ConversationID, res.MessageID, res.TmpID)
-				return nil
-			})
+			ctx, cancel := context.WithTimeout(cmd.Context(), daemonCallTimeout)
+			defer cancel()
+			var approval store.Approval
+			if err := callDaemon(ctx, "send.text", map[string]any{
+				"conversation_id": to, "body": message, "reply_to_id": replyTo, "requested_by": "cli",
+			}, &approval); err != nil {
+				return err
+			}
+			if flags.jsonOut {
+				return output.JSON(os.Stdout, approval)
+			}
+			if approval.Status == store.ApprovalPending {
+				fmt.Fprintf(os.Stderr, "Queued for approval (approval_id %s); no message sent.\n", approval.ID)
+			} else {
+				fmt.Fprintf(os.Stderr, "Message status %s for %s (approval_id %s)\n", approval.Status, approval.ConversationID, approval.ID)
+			}
+			return nil
 		},
 	}
 	c.Flags().StringVar(&to, "to", "", "conversation_id (find one via `gmcli chats list`)")
@@ -87,27 +83,19 @@ func sendReactCmd() *cobra.Command {
 			if err := requireWritable(); err != nil {
 				return err
 			}
-			action := gm.ReactionAdd
-			switch {
-			case remove:
-				action = gm.ReactionRemove
-			case switchAct:
-				action = gm.ReactionSwitch
+			ctx, cancel := context.WithTimeout(cmd.Context(), daemonCallTimeout)
+			defer cancel()
+			var result map[string]any
+			if err := callDaemon(ctx, "send.react", map[string]any{
+				"message_id": msgID, "emoji": emoji, "remove": remove, "switch": switchAct,
+			}, &result); err != nil {
+				return err
 			}
-			return runWithConnectedClient(func(ctx context.Context, c *gm.Client, _ *store.Store) error {
-				if err := c.SendReaction(msgID, emoji, action); err != nil {
-					return err
-				}
-				if flags.jsonOut {
-					return output.JSON(os.Stdout, map[string]any{
-						"reacted":    true,
-						"message_id": msgID,
-						"emoji":      emoji,
-					})
-				}
-				fmt.Fprintf(os.Stderr, "Reacted %s on %s\n", emoji, msgID)
-				return nil
-			})
+			if flags.jsonOut {
+				return output.JSON(os.Stdout, result)
+			}
+			fmt.Fprintf(os.Stderr, "Reacted %s on %s\n", emoji, msgID)
+			return nil
 		},
 	}
 	c.Flags().StringVar(&msgID, "message", "", "target message_id")
@@ -115,49 +103,4 @@ func sendReactCmd() *cobra.Command {
 	c.Flags().BoolVar(&remove, "remove", false, "remove the reaction instead of adding it")
 	c.Flags().BoolVar(&switchAct, "switch", false, "switch an existing reaction to a new emoji")
 	return c
-}
-
-// runWithConnectedClient opens the store + libgm session, registers the
-// sync pump (so events resulting from this operation update the DB), and
-// invokes fn with both. Disconnects on return. Bounds the overall operation
-// at twice readyTimeout — enough for WaitForReady plus the actual write.
-func runWithConnectedClient(fn func(ctx context.Context, c *gm.Client, st *store.Store) error) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*readyTimeout)
-	defer cancel()
-	return runWithConnectedContext(ctx, fn)
-}
-func runWithConnectedContext(parent context.Context, fn func(ctx context.Context, c *gm.Client, st *store.Store) error) error {
-	layout, err := resolveLayout()
-	if err != nil {
-		return err
-	}
-	logger := newLogger()
-
-	ctx, cancel := signalContext(parent)
-	defer cancel()
-
-	st, err := store.Open(ctx, layout.Database)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-
-	client, err := gm.Open(layout, logger)
-	if err != nil {
-		return err
-	}
-
-	pump := gmsync.New(st, logger)
-	client.Subscribe(pump.Handle)
-
-	if err := client.Connect(); err != nil {
-		return fmt.Errorf("connect: %w", err)
-	}
-	defer client.Disconnect()
-
-	if err := client.WaitForReady(ctx); err != nil {
-		return fmt.Errorf("wait for ready: %w", err)
-	}
-
-	return fn(ctx, client, st)
 }

@@ -57,7 +57,7 @@ func Backfill(ctx context.Context, st *store.Store, client *gm.Client, pump *gms
 		if err := ctx.Err(); err != nil {
 			return res, err
 		}
-		resp, err := client.Underlying().FetchMessages(chat, count, cursor)
+		resp, err := client.Underlying().FetchMessages(ctx, chat, count, cursor)
 		if err != nil {
 			res.StopReason = "fetch_failed"
 			return res, fmt.Errorf("fetch messages: %w", err)
@@ -100,7 +100,7 @@ func Backfill(ctx context.Context, st *store.Store, client *gm.Client, pump *gms
 // with an E.164 phone number and imports it through pump. Returns the proto
 // so callers can read the conversation ID and name.
 func LookupConversation(client *gm.Client, pump *gmsync.Pump, phone string) (*gmproto.Conversation, error) {
-	resp, err := client.Underlying().GetOrCreateConversation(&gmproto.GetOrCreateConversationRequest{
+	resp, err := client.Underlying().GetOrCreateConversation(context.Background(), &gmproto.GetOrCreateConversationRequest{
 		Numbers: []*gmproto.ContactNumber{
 			{MysteriousInt: 7, Number: phone, Number2: phone},
 		},

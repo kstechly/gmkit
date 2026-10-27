@@ -125,6 +125,41 @@ func (s *Store) TouchSync(ctx context.Context) error {
 	return err
 }
 
+// AppendVerdict records one change of the pairing verdict; verdict is its
+// JSON form.
+func (s *Store) AppendVerdict(ctx context.Context, at time.Time, state string, verdict []byte) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO verdict_log (at, state, verdict) VALUES (?, ?, ?)`,
+		at.UnixMilli(), state, string(verdict))
+	return err
+}
+
+// VerdictRow is one verdict_log entry.
+type VerdictRow struct {
+	At      time.Time
+	State   string
+	Verdict string
+}
+
+// VerdictLog returns the newest limit verdict changes, newest first.
+func (s *Store) VerdictLog(ctx context.Context, limit int) ([]VerdictRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT at, state, verdict FROM verdict_log ORDER BY at DESC, rowid DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []VerdictRow
+	for rows.Next() {
+		var at int64
+		var r VerdictRow
+		if err := rows.Scan(&at, &r.State, &r.Verdict); err != nil {
+			return nil, err
+		}
+		r.At = time.UnixMilli(at)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // SyncState is what doctor/--json emit about freshness.
 type SyncState struct {
 	LastEventTime   time.Time
